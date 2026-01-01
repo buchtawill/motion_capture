@@ -1,6 +1,9 @@
 import cv2
+import threading
+import queue
 import time
 from typing import Optional
+import numpy as np
 
 
 class Camera:
@@ -34,6 +37,10 @@ class Camera:
         self.cap.set(cv2.CAP_PROP_FPS, fps)
 
         self.last_frame: Optional[cv2.Mat] = None
+        
+        self.queue = queue.Queue(maxsize=1)
+        self.running = False
+        self.thread = None
 
         print(
             f"Camera {index}: "
@@ -42,11 +49,41 @@ class Camera:
             f"{self.cap.get(cv2.CAP_PROP_FPS)} FPS"
         )
 
-    def read(self):
-        ret, frame = self.cap.read()
-        if ret:
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.thread.start()
+
+    def _capture_loop(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                self.last_frame = frame
+                # Only keep the latest frame in the queue
+                if self.queue.full():
+                    try:
+                        self.queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                self.queue.put(frame)
+
+    def read(self, wait_for_frame=False):
+        """Get the latest frame."""
+        if wait_for_frame:
+            frame = self.queue.get()  # blocks until a frame is available
             self.last_frame = frame
-        return ret, frame
+            return True, frame
+        try:
+            frame = self.queue.get_nowait()
+            return True, frame
+        except queue.Empty:
+            return False, self.last_frame
+
+    def stop(self):
+        self.running = False
+        if self.thread is not None:
+            self.thread.join()
+        self.cap.release()
 
     def measure_fps(self, num_frames=300):
         t0 = time.perf_counter()
@@ -76,61 +113,43 @@ def list_available_cameras(max_devices=10, backend=cv2.CAP_DSHOW)->list:
     return available
 
 def main():
-    # print(list_available_cameras())
-    # exit()
-    
     camera_indices = [1, 2, 3, 4]
+    cameras = [Camera(idx, fps=120) for idx in camera_indices]
 
-    # Open all cameras
-    cameras = []
-    for idx in camera_indices:
-        cam = Camera(idx, fps=100)
-        cameras.append(cam)
-        # time.sleep(2)
-
-    print("\n--- Measuring FPS individually ---")
     for cam in cameras:
         cam.measure_fps()
 
-    print("\n--- Reading frames from all cameras (ESC to stop) ---")
-
+    # Start all camera threads
+    for cam in cameras:
+        cam.start()
+    
+    print("INFO [camera.py] Measuring collective frame rate")
     frame_count = 0
     t_start = time.perf_counter()
     try:
-        while True:
+        while frame_count < 2000:
+            frames = {}
             for cam in cameras:
-                ret, frame = cam.read()
+                ret, frame = cam.read(wait_for_frame=True)
                 if not ret:
-                    print(f"Camera {cam.index} failed to read")
-                    return
+                    print(f"Camera {cam.index} has no frame yet")
+                frames[cam.index] = frame
 
+            # Process multi-camera frames here
+            # frames is a dict of index -> frame
             frame_count += 1
-
-            if frame_count >= 1000:
-                break
 
     except KeyboardInterrupt:
         pass
-
     finally:
         t_end = time.perf_counter()
         elapsed = t_end - t_start
-
         system_fps = frame_count / elapsed if elapsed > 0 else 0.0
 
-        print("\n--- Multi-camera FPS measurement ---")
-        print(f"Total frames (per camera): {frame_count}")
-        print(f"Elapsed time: {elapsed:.3f} s")
-        print(f"Effective system FPS: {system_fps:.2f} Hz")
+        print(f"Captured {frame_count} frames in {elapsed:.3f}s -> {system_fps:.2f} FPS")
 
         for cam in cameras:
-            print(f"Camera {cam.index} effective FPS: {system_fps:.2f} Hz")
-
-        for cam in cameras:
-            cam.release()
-
-
+            cam.stop()
 
 if __name__ == "__main__":
     main()
-
