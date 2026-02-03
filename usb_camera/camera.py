@@ -4,6 +4,7 @@ import queue
 import time
 from typing import Optional
 import numpy as np
+import os
 
 
 class Camera:
@@ -122,21 +123,23 @@ def main():
     # Start all camera threads
     for cam in cameras:
         cam.start()
-    
+
     print("INFO [camera.py] Measuring collective frame rate")
+
     frame_count = 0
+    last_frames = {}  # index -> last valid frame
+
     t_start = time.perf_counter()
     try:
         while frame_count < 2000:
-            frames = {}
             for cam in cameras:
                 ret, frame = cam.read(wait_for_frame=True)
                 if not ret:
                     print(f"Camera {cam.index} has no frame yet")
-                frames[cam.index] = frame
+                    continue
 
-            # Process multi-camera frames here
-            # frames is a dict of index -> frame
+                last_frames[cam.index] = frame
+
             frame_count += 1
 
     except KeyboardInterrupt:
@@ -147,6 +150,15 @@ def main():
         system_fps = frame_count / elapsed if elapsed > 0 else 0.0
 
         print(f"Captured {frame_count} frames in {elapsed:.3f}s -> {system_fps:.2f} FPS")
+
+        # Ensure output directory exists
+        os.makedirs("pics", exist_ok=True)
+
+        # Save last frame from each camera
+        for cam_idx, frame in last_frames.items():
+            out_path = f"pics/last_frame_{cam_idx}.png"
+            cv2.imwrite(out_path, frame)
+            print(f"Saved {out_path}")
 
         for cam in cameras:
             cam.stop()
