@@ -11,15 +11,17 @@
 #include "MIPI_CSI_2_RX.h"
 
 
-#define IRPT_CTL_DEVID 		XPAR_PS7_SCUGIC_0_DEVICE_ID
-#define GPIO_DEVID			XPAR_PS7_GPIO_0_DEVICE_ID
-#define GPIO_IRPT_ID			XPAR_PS7_GPIO_0_INTR
-#define CAM_I2C_DEVID		XPAR_PS7_I2C_0_DEVICE_ID
-#define CAM_I2C_IRPT_ID		XPAR_PS7_I2C_0_INTR
-#define VDMA_DEVID			XPAR_AXIVDMA_0_DEVICE_ID
-#define VDMA_MM2S_IRPT_ID	XPAR_FABRIC_AXI_VDMA_0_MM2S_INTROUT_INTR
-#define VDMA_S2MM_IRPT_ID	XPAR_FABRIC_AXI_VDMA_0_S2MM_INTROUT_INTR
-#define CAM_I2C_SCLK_RATE	100000
+#define IRPT_CTL_DEVID 		        0 // XPAR_PS7_SCUGIC_0_DEVICE_ID
+#define GPIO_DEVID			        0 // XPAR_PS7_GPIO_0_DEVICE_ID
+#define GPIO_IRPT_ID			    XPAR_PS7_GPIO_0_INTR
+#define CAM_I2C_DEVID		        0 //XPAR_PS7_I2C_0_DEVICE_ID
+#define CAM_I2C_IRPT_ID		        XPAR_PS7_I2C_0_INTR
+#define VDMA_DEVID			        0 // XPAR_AXIVDMA_0_DEVICE_ID
+#define VDMA_MM2S_IRPT_ID	        62U // XPAR_FABRIC_AXI_VDMA_0_MM2S_INTROUT_INTR 
+#define VDMA_S2MM_IRPT_ID	        63U // XPAR_FABRIC_AXI_VDMA_0_S2MM_INTROUT_INTR
+#define CAM_I2C_SCLK_RATE	        100000
+#define XPAR_VTC_0_DEVICE_ID        0
+#define XPAR_VIDEO_DYNCLK_DEVICE_ID 0
 
 #define DDR_BASE_ADDR		XPAR_DDR_MEM_BASEADDR
 #define MEM_BASE_ADDR		(DDR_BASE_ADDR + 0x0A000000)
@@ -33,8 +35,8 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver, OV56
 	//Bring up input pipeline back-to-front
 	{
 		vdma_driver.resetWrite();
-		MIPI_CSI_2_RX_mWriteReg(XPAR_MIPI_CSI_2_RX_0_S_AXI_LITE_BASEADDR, CR_OFFSET, (CR_RESET_MASK & ~CR_ENABLE_MASK));
-		MIPI_D_PHY_RX_mWriteReg(XPAR_MIPI_D_PHY_RX_0_S_AXI_LITE_BASEADDR, CR_OFFSET, (CR_RESET_MASK & ~CR_ENABLE_MASK));
+		MIPI_CSI_2_RX_mWriteReg(XPAR_MIPI_CSI_2_RX_0_BASEADDR, CR_OFFSET, (CR_RESET_MASK & ~CR_ENABLE_MASK));
+		MIPI_D_PHY_RX_mWriteReg(XPAR_MIPI_D_PHY_RX_0_BASEADDR, CR_OFFSET, (CR_RESET_MASK & ~CR_ENABLE_MASK));
 		cam.reset();
 	}
 
@@ -46,9 +48,9 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver, OV56
 	}
 
 	{
-		vdma_driver.enableWrite();
-		MIPI_CSI_2_RX_mWriteReg(XPAR_MIPI_CSI_2_RX_0_S_AXI_LITE_BASEADDR, CR_OFFSET, CR_ENABLE_MASK);
-		MIPI_D_PHY_RX_mWriteReg(XPAR_MIPI_D_PHY_RX_0_S_AXI_LITE_BASEADDR, CR_OFFSET, CR_ENABLE_MASK);
+		// vdma_driver.enableWrite();
+		MIPI_CSI_2_RX_mWriteReg(XPAR_MIPI_CSI_2_RX_0_BASEADDR, CR_OFFSET, CR_ENABLE_MASK);
+		MIPI_D_PHY_RX_mWriteReg(XPAR_MIPI_D_PHY_RX_0_BASEADDR, CR_OFFSET, CR_ENABLE_MASK);
 		cam.set_mode(mode);
 		cam.set_awb(OV5640_cfg::awb_t::AWB_ADVANCED);
 	}
@@ -86,6 +88,9 @@ int main()
 
 	pipeline_mode_change(vdma_driver, cam, vid, Resolution::R1920_1080_60_PP, OV5640_cfg::mode_t::MODE_1080P_1920_1080_30fps);
 
+    // for(uint32_t i = 0; i < 1920*1024*3*3; i++)
+	xil_printf("Resetting frame buffer\r\n");
+    memset((uint32_t*)MEM_BASE_ADDR, 0xFF, 1920*1080*3*3);
 
 	xil_printf("Video init done.\r\n");
 
