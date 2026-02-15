@@ -176,7 +176,7 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 # Set IP repository paths
 set obj [get_filesets sources_1]
 if { $obj != {} } {
-   set_property "ip_repo_paths" "[file normalize "$origin_dir/ip_repo"]" $obj
+   set_property "ip_repo_paths" "[file normalize "$origin_dir/ip_repo/repo"]" $obj
   #  set_property "ip_repo_paths" "[file normalize "/tools/Xilinx/Vivado/2024.1/data/ip"]" $obj
 
    # Rebuild user ip_repo's index before adding any source files
@@ -189,7 +189,6 @@ set files [list \
  [file normalize "${origin_dir}/src/hdl/SyncAsync.vhd"] \
  [file normalize "${origin_dir}/src/hdl/SyncAsyncReset.vhd"] \
  [file normalize "${origin_dir}/src/hdl/DVIClocking.vhd"] \
- [file normalize "${origin_dir}/src/bd/system.tcl" ]\
 ]
 add_files -norecurse -fileset $obj $files
 
@@ -609,3 +608,5 @@ source $origin_dir/src/bd/system.tcl
 # Generate the wrapper
 set design_name [get_bd_designs]
 make_wrapper -files [get_files $design_name.bd] -top -import
+
+exit 0

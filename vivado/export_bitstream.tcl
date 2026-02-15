@@ -29,29 +29,30 @@ update_compile_order -fileset sources_1
 
 # Run synthesis
 reset_run synth_1
-launch_runs synth_1 -jobs 14
+launch_runs synth_1 -jobs 8
 if {[catch {wait_on_run synth_1} result]} {
     puts "Error during synthesis: $result"
     exit 1
 }
 
-# Run implementation, generate the bitstream
 reset_run impl_1
-launch_runs impl_1 -to_step write_bitstream -jobs 14
+launch_runs impl_1 -to_step write_bitstream -jobs 8
 if {[catch {wait_on_run impl_1} result]} {
     puts "Error during implementation: $result"
     exit 1
 }
 
-if {[catch {write_hw_platform -fixed -include_bit -force -file "$project_dir/kv260_upscaler.xsa"} result]} {
+if {[catch {write_hw_platform -fixed -include_bit -force -file "$project_dir/$project_name.xsa"} result]} {
     puts "Error writing hardware platform: $result"
     exit 1
 }
 
+puts "Opening impl1 run"
 open_run impl_1
+puts "opened impl1 run"
 
 # Write the bitstream and export it to ./bitstreams
-write_bitstream -force "$bitstream_dir/kv260_fpga_image.bit"
+write_bitstream -force "$project_dir/$project_name.bit"
 
 set xsa_path "$project_dir/${project_name}.xsa"
 if {[catch {write_hw_platform -fixed -include_bit -force -file $xsa_path} result]} {
@@ -61,3 +62,4 @@ if {[catch {write_hw_platform -fixed -include_bit -force -file $xsa_path} result
 puts "Exported XSA to: $xsa_path"
 
 close_project
+exit 0
