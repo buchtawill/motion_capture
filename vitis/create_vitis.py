@@ -5,6 +5,14 @@ import shutil
 import json
 import signal
 
+def die_with_error(message):
+    print(f"ERROR [create_vitis.py] {message}")
+    try:
+        vitis.dispose() # type: ignore
+    except Exception as e:
+        print(f"Error disposing vitis: {e}")
+    sys.exit(1)
+
 def signal_handler(sig, frame):
     print("\nINFO [create_vitis.py] Caught Ctrl+C, disposing vitis...")
     try:
@@ -43,7 +51,7 @@ if os.path.exists(workspace_path):
 
 if(not os.path.exists(xsa_path)):
     print(f"ERROR [create_vitis.py] No hardware XSA file at {xsa_path}")
-    exit(1)
+    die_with_error("XSA file not found")
 
 # -----------------------------------------------------------------------------------
 # 2. Initialize Vitis Client
@@ -74,7 +82,7 @@ platform_comp.build()
 platform_xpfm = os.path.join(workspace_path, f"{PLATFORM_NAME}/export/{PLATFORM_NAME}/{PLATFORM_NAME}.xpfm")
 if not os.path.exists(platform_xpfm):
     print(f"ERROR: Platform XPFM file was not generated at: {platform_xpfm}")
-    exit(1)
+    die_with_error("Platform XPFM file not generated")
     
 print("INFO [create_vitis.py] Creating Application")
 app_comp = client.create_app_component(
@@ -120,7 +128,7 @@ if os.path.exists(src_dir):
     print(f"   - Successfully merged sources from {src_dir}")
 else:
     print(f"ERROR [create_vitis.py] Source directory {src_dir} not found!")
-    exit(1)
+    die_with_error("Source directory not found")
 
 # 6. Build
 print(f"INFO [create_vitis.py] Building application")
@@ -128,7 +136,7 @@ result = app_comp.build()
 
 if(result != 0):
     print("ERROR [create_vitis.py] Application build failed")
-    exit(1)
+    die_with_error("Application build failed")
 print(f"INFO [create_vitis.py] Application build successful")
 
 
