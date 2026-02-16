@@ -20,7 +20,7 @@ template <typename IrptCtl>
 class PS_GPIO : public GPIO_Client
 {
 public:
-	PS_GPIO(uint16_t dev_id, IrptCtl& irpt_ctl, uint16_t irpt_id) :
+	PS_GPIO(uint32_t dev_id, IrptCtl& irpt_ctl, uint16_t irpt_id) :
 		drv_inst_(), irpt_ctl_(irpt_ctl)
 	{
 		XGpioPs_Config* config = XGpioPs_LookupConfig(dev_id);

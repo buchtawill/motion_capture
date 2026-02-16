@@ -6,3 +6,6 @@ system_wrapper
 RemoteSystemTempFiles
 _ide
 Debug
+workspace
+.Xil
+xrc.log
