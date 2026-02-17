@@ -13,6 +13,7 @@
 #include "xuartps.h"
 
 #include <cstdint>
+#include <xil_cache.h>
 #include <xil_io.h>
 #include <xil_types.h>
 
@@ -47,9 +48,17 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
 
 int main()
 {
-	//init_platform();
-    //Xil_ICacheEnable();
-    //Xil_DCacheEnable();
+	// init_platform();
+    // Xil_ICacheEnable();
+    // Xil_DCacheEnable();
+
+    volatile uint8_t* fb = (uint8_t*)MEM_BASE_ADDR;
+	for(u32 i = 0; i < 1920*1080*3; i+=3){
+		fb[i]   = 0xFF; // Green
+		fb[i+1] = 0xFF; // Blue
+		fb[i+2] = 0x00; // Red
+	}
+    Xil_DCacheFlush();
 
 	ScuGicInterruptController irpt_ctl(
         IRPT_CTL_DEVID
@@ -88,13 +97,6 @@ int main()
         OV5640_cfg::mode_t::MODE_1080P_1920_1080_30fps
     );
 	xil_printf("Video init done.\r\n");
-
-	uint8_t* fb = (uint8_t*)MEM_BASE_ADDR;
-	for(u32 i = 0; i < 1920*1080*3; i+=3){
-		fb[i]   = 0xFF;
-		fb[i+1] = 0;
-		fb[i+2] = 0xFF;
-	}
 
 	// Liquid lens control
 	uint8_t read_char0 = 0;
@@ -478,7 +480,7 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
     // TODO CSI-2, D-PHY config here
 #if (DEBUG_EN == 0x0)
     cam.init();
-    vdma_driver.enableWrite();
+    // vdma_driver.enableWrite();
 #endif
     MIPI_CSI_2_RX_mWriteReg(
         XPAR_MIPI_CSI_2_RX_0_BASEADDR,

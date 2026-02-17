@@ -11,13 +11,31 @@ enable_language(C ASM CXX)
 find_package(common)
 collect(PROJECT_LIB_DEPS xilstandalone;xiltimer)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 collect(PROJECT_LIB_DEPS xil)
 collect(PROJECT_LIB_DEPS gcc)
 collect(PROJECT_LIB_DEPS c)
 
 collect (PROJECT_LIB_SOURCES ov5640/OV5640.cpp)
 collect (PROJECT_LIB_SOURCES main.cc)
-collect (PROJECT_LIB_SOURCES platform/platform.c)
+collect (PROJECT_LIB_SOURCES platform.c)
 collector_list (_sources PROJECT_LIB_SOURCES)
 foreach (source ${_sources})
     get_filename_component(ext ${source} EXT)
