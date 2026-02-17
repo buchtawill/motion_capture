@@ -60,42 +60,26 @@ int main()
 	}
     Xil_DCacheFlush();
 
-	ScuGicInterruptController irpt_ctl(
-        IRPT_CTL_DEVID
-    );
-	PS_GPIO<ScuGicInterruptController> gpio_driver(
-        GPIO_DEVID,
-        irpt_ctl,
-        GPIO_IRPT_ID
-    );
-	PS_IIC<ScuGicInterruptController> iic_driver(
-        CAM_I2C_DEVID,
-        irpt_ctl,
-        CAM_I2C_IRPT_ID,
-        CAM_I2C_SCLK_RATE
-    );
-	OV5640 cam(
-        iic_driver,
-        gpio_driver
-    );
+	ScuGicInterruptController irpt_ctl(IRPT_CTL_DEVID);
+
+	PS_GPIO<ScuGicInterruptController> gpio_driver(GPIO_DEVID, irpt_ctl, GPIO_IRPT_ID);
+	
+	PS_IIC<ScuGicInterruptController> iic_driver(CAM_I2C_DEVID, irpt_ctl, CAM_I2C_IRPT_ID, CAM_I2C_SCLK_RATE);
+
+	OV5640 cam(iic_driver, gpio_driver);
+
 	AXI_VDMA<ScuGicInterruptController> vdma_driver(
-        VDMA_DEVID,
+		VDMA_DEVID,
         MEM_BASE_ADDR,
         irpt_ctl,
         VDMA_MM2S_IRPT_ID,
         VDMA_S2MM_IRPT_ID
     );
-	VideoOutput vid(
-        XPAR_VTG_BASEADDR,
-        XPAR_VIDEO_DYNCLK_BASEADDR
-    );
-	pipeline_mode_change(
-        vdma_driver,
-        cam,
-        vid,
-        Resolution::R1920_1080_60_PP,
-        OV5640_cfg::mode_t::MODE_1080P_1920_1080_30fps
-    );
+
+	VideoOutput vid(XPAR_VTG_BASEADDR, XPAR_VIDEO_DYNCLK_BASEADDR);
+
+	pipeline_mode_change(vdma_driver, cam, vid, Resolution::R1280_720_60_PP, OV5640_cfg::mode_t::MODE_720P_1280_720_60fps);
+	
 	xil_printf("Video init done.\r\n");
 
 	// Liquid lens control
