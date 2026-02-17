@@ -9,3 +9,4 @@ Debug
 workspace
 .Xil
 xrc.log
+*.cache
