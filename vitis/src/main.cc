@@ -480,7 +480,7 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
     // TODO CSI-2, D-PHY config here
 #if (DEBUG_EN == 0x0)
     cam.init();
-    // vdma_driver.enableWrite();
+    vdma_driver.enableWrite();
 #endif
     MIPI_CSI_2_RX_mWriteReg(
         XPAR_MIPI_CSI_2_RX_0_BASEADDR,

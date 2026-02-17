@@ -23,6 +23,17 @@ def log(level, func_name, message):
     """Helper to enforce strict logging format."""
     print(f"{level} [update_src::{func_name}] {message}")
 
+def is_whitespace_only_change(file1, file2):
+    """Compare two files ignoring whitespace."""
+    try:
+        with open(file1, 'r', encoding='utf-8') as f1, open(file2, 'r', encoding='utf-8') as f2:
+            content1 = "".join(f1.read().split())
+            content2 = "".join(f2.read().split())
+            return content1 == content2
+    except Exception:
+        # If binary or encoding error, assume not whitespace only
+        return False
+
 def calculate_md5(file_path):
     """Calculate MD5 hash of a file to check for content changes."""
     hash_md5 = hashlib.md5()
@@ -69,6 +80,12 @@ def update_sources():
                 workspace_hash = calculate_md5(workspace_path)
 
                 if golden_hash != workspace_hash:
+                    # Special check for CMakeLists.txt whitespace ignoring
+                    if file == "CMakeLists.txt" and is_whitespace_only_change(golden_path, workspace_path):
+                         log("INFO", func_name, f"Skipped CMakeLists.txt (whitespace only)")
+                         skipped_count += 1
+                         continue
+
                     try:
                         shutil.copy2(workspace_path, golden_path)
                         log("INFO", func_name, f"Updated: {rel_path}")
