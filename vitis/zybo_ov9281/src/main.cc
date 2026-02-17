@@ -2,11 +2,11 @@
 //#include "xparameters_ps.h" // for INTRs
 
 #include "platform.h"
-#include "ov5640/OV5640.h"
-#include "ov5640/ScuGicInterruptController.h"
-#include "ov5640/PS_GPIO.h"
-#include "ov5640/AXI_VDMA.h"
-#include "ov5640/PS_IIC.h"
+#include "cam/OV9281.h"
+#include "cam/ScuGicInterruptController.h"
+#include "cam/PS_GPIO.h"
+#include "cam/AXI_VDMA.h"
+#include "cam/PS_IIC.h"
 
 #include "MIPI_D_PHY_RX.h"
 #include "MIPI_CSI_2_RX.h"
@@ -40,10 +40,10 @@ using namespace digilent;
 void dFlushUart();
 uint8_t dGetChar();
 void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
-                          OV5640& cam,
+                          OV9281& cam,
                           VideoOutput& vid,
                           Resolution res,
-                          OV5640_cfg::mode_t mode
+                          OV9281_cfg::mode_t mode
                           );
 
 int main()
@@ -51,6 +51,8 @@ int main()
 	// init_platform();
     // Xil_ICacheEnable();
     // Xil_DCacheEnable();
+	xil_printf("Starting cam ping test\r\n");
+
 
     volatile uint8_t* fb = (uint8_t*)MEM_BASE_ADDR;
 	for(u32 i = 0; i < 1920*1080*3; i+=3){
@@ -66,7 +68,7 @@ int main()
 	
 	PS_IIC<ScuGicInterruptController> iic_driver(CAM_I2C_DEVID, irpt_ctl, CAM_I2C_IRPT_ID, CAM_I2C_SCLK_RATE);
 
-	OV5640 cam(iic_driver, gpio_driver);
+	OV9281 cam(iic_driver, gpio_driver);
 
 	AXI_VDMA<ScuGicInterruptController> vdma_driver(
 		VDMA_DEVID,
@@ -78,7 +80,7 @@ int main()
 
 	VideoOutput vid(XPAR_VTG_BASEADDR, XPAR_VIDEO_DYNCLK_BASEADDR);
 
-	pipeline_mode_change(vdma_driver, cam, vid, Resolution::R1280_720_60_PP, OV5640_cfg::mode_t::MODE_720P_1280_720_60fps);
+	pipeline_mode_change(vdma_driver, cam, vid, Resolution::R1280_720_60_PP, OV9281_cfg::mode_t::MODE_720P_1280_720_60fps);
 	
 	xil_printf("Video init done.\r\n");
 
@@ -96,7 +98,7 @@ int main()
 		xil_printf("\r\n\r\n\r\nPcam 5C MAIN OPTIONS\r\n");
 		xil_printf("\r\nPlease press the key corresponding to the desired option:");
 		xil_printf("\r\n  a. Change Resolution");
-		xil_printf("\r\n  b. Change Liquid Lens Focus");
+		// xil_printf("\r\n  b. Change Liquid Lens Focus");
 		xil_printf("\r\n  d. Change Image Format (Raw or RGB)");
 		xil_printf("\r\n  e. Write a Register Inside the Image Sensor");
 		xil_printf("\r\n  f. Read a Register Inside the Image Sensor");
@@ -125,7 +127,7 @@ int main()
                     cam,
                     vid,
                     Resolution::R1280_720_60_PP,
-                    OV5640_cfg::mode_t::MODE_720P_1280_720_60fps
+                    OV9281_cfg::mode_t::MODE_720P_1280_720_60fps
                 );
 				xil_printf("Resolution change done.\r\n");
 				break;
@@ -135,7 +137,7 @@ int main()
                     cam,
                     vid,
                     Resolution::R1920_1080_60_PP,
-                    OV5640_cfg::mode_t::MODE_1080P_1920_1080_15fps
+                    OV9281_cfg::mode_t::MODE_1080P_1920_1080_15fps
                 );
 				xil_printf("Resolution change done.\r\n");
 				break;
@@ -145,7 +147,7 @@ int main()
                     cam,
                     vid,
                     Resolution::R1920_1080_60_PP,
-                    OV5640_cfg::mode_t::MODE_1080P_1920_1080_30fps
+                    OV9281_cfg::mode_t::MODE_1080P_1920_1080_30fps
                 );
 				xil_printf("Resolution change done.\r\n");
 				break;
@@ -154,34 +156,34 @@ int main()
 			}
 			break;
 
-		case 'b':
-			xil_printf("\r\n\r\nPlease enter value of liquid lens register, in hex, with small letters (2 nibbles): 0x");
-			//A, B, C,..., F need to be entered with small letters
-			while (read_char1 < 48) {
-				read_char1 = getchar();
-			}
-			while (read_char2 < 48) {
-				read_char2 = getchar(); getchar();
-			}
-			// If character is a digit, convert from ASCII code to a digit between 0 and 9
-			if (read_char1 <= 57) {
-				read_char1 -= 48;
-			}
-			// If character is a letter, convert ASCII code to a number between 10 and 15
-			else {
-				read_char1 -= 87;
-			}
-			// If character is a digit, convert from ASCII code to a digit between 0 and 9
-			if (read_char2 <= 57) {
-				read_char2 -= 48;
-			}
-			// If character is a letter, convert ASCII code to a number between 10 and 15
-			else {
-				read_char2 -= 87;
-			}
-			cam.writeRegLiquid((uint8_t) (16*read_char1 + read_char2));
-			xil_printf("\r\nWrote to liquid lens controller: %x", (uint8_t) (16*read_char1 + read_char2));
-			break;
+		// case 'b':
+		// 	xil_printf("\r\n\r\nPlease enter value of liquid lens register, in hex, with small letters (2 nibbles): 0x");
+		// 	//A, B, C,..., F need to be entered with small letters
+		// 	while (read_char1 < 48) {
+		// 		read_char1 = getchar();
+		// 	}
+		// 	while (read_char2 < 48) {
+		// 		read_char2 = getchar(); getchar();
+		// 	}
+		// 	// If character is a digit, convert from ASCII code to a digit between 0 and 9
+		// 	if (read_char1 <= 57) {
+		// 		read_char1 -= 48;
+		// 	}
+		// 	// If character is a letter, convert ASCII code to a number between 10 and 15
+		// 	else {
+		// 		read_char1 -= 87;
+		// 	}
+		// 	// If character is a digit, convert from ASCII code to a digit between 0 and 9
+		// 	if (read_char2 <= 57) {
+		// 		read_char2 -= 48;
+		// 	}
+		// 	// If character is a letter, convert ASCII code to a number between 10 and 15
+		// 	else {
+		// 		read_char2 -= 87;
+		// 	}
+		// 	cam.writeRegLiquid((uint8_t) (16*read_char1 + read_char2));
+		// 	xil_printf("\r\nWrote to liquid lens controller: %x", (uint8_t) (16*read_char1 + read_char2));
+		// 	break;
 
 		case 'd':
 			xil_printf("\r\n  Please press the key corresponding to the desired setting:");
@@ -194,11 +196,11 @@ int main()
             switch (read_char1) 
             {
 			case '1':
-				cam.set_isp_format(OV5640_cfg::isp_format_t::ISP_RGB);
+				cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RGB);
 				xil_printf("Settings change done.\r\n");
 				break;
 			case '2':
-				cam.set_isp_format(OV5640_cfg::isp_format_t::ISP_RAW);
+				cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RAW);
 				xil_printf("Settings change done.\r\n");
 				break;
 			default:
@@ -378,15 +380,15 @@ int main()
             switch (read_char1)
             {
 			case '1':
-				cam.set_awb(OV5640_cfg::awb_t::AWB_ADVANCED);
+				cam.set_awb(OV9281_cfg::awb_t::AWB_ADVANCED);
 				xil_printf("Enabled Advanced AWB\r\n");
 				break;
 			case '2':
-				cam.set_awb(OV5640_cfg::awb_t::AWB_SIMPLE);
+				cam.set_awb(OV9281_cfg::awb_t::AWB_SIMPLE);
 				xil_printf("Enabled Simple AWB\r\n");
 				break;
 			case '3':
-				cam.set_awb(OV5640_cfg::awb_t::AWB_DISABLED);
+				cam.set_awb(OV9281_cfg::awb_t::AWB_DISABLED);
 				xil_printf("Disabled AWB\r\n");
 				break;
 			default:
@@ -434,10 +436,10 @@ uint8_t dGetChar()
 }
 
 void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
-                          OV5640& cam,
+                          OV9281& cam,
                           VideoOutput& vid,
                           Resolution res,
-                          OV5640_cfg::mode_t mode
+                          OV9281_cfg::mode_t mode
                           )
 {
 	// Bring up input pipeline back-to-front
@@ -478,7 +480,7 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
     );
 #if (DEBUG_EN == 0x0)
     cam.set_mode(mode);
-    cam.set_awb(OV5640_cfg::awb_t::AWB_ADVANCED);
+    cam.set_awb(OV9281_cfg::awb_t::AWB_ADVANCED);
 #endif
     // Bring up output pipeline back-to-front
     vid.reset();

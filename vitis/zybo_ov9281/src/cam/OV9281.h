@@ -1,5 +1,5 @@
 /*
- * OV5640.h
+ * OV9281.h
  *
  *  Created on: May 26, 2016
  *      Author: Elod
@@ -27,7 +27,7 @@ namespace digilent
 
 typedef enum {OK=0, ERR_LOGICAL, ERR_GENERAL} Errc;
 
-namespace OV5640_cfg 
+namespace OV9281_cfg 
 {
 	using config_word_t = struct { uint16_t addr; uint8_t data; };
 	using mode_t = enum { 
@@ -40,8 +40,8 @@ namespace OV5640_cfg
 	using awb_t = enum { AWB_DISABLED = 0, AWB_SIMPLE, AWB_ADVANCED, AWB_END };
 	using config_awb_t = struct { awb_t awb; config_word_t const* cfg; size_t cfg_size; };
 	using isp_format_t = enum { ISP_RAW = 0, ISP_RGB, ISP_END };
-	uint16_t const OV5640_REG_PRE_ISP_TEST_SET1 = 0x503D;
-	uint16_t const OV5640_FORMAT_MUX_CONTROL = 0x501f;
+	uint16_t const OV9281_REG_PRE_ISP_TEST_SET1 = 0x503D;
+	uint16_t const OV9281_FORMAT_MUX_CONTROL = 0x501f;
 	config_word_t const cfg_advanced_awb_[] =
 	{
 		// Enable Advanced AWB
@@ -699,20 +699,19 @@ namespace OV5640_cfg
 	};
 }
 
-class OV5640
+class OV9281
 {
 public:
 	class HardwareError;
 
-	OV5640(I2C_Client& iic, GPIO_Client& gpio) :
+	OV9281(I2C_Client& iic, GPIO_Client& gpio) :
 		iic_(iic), gpio_(gpio)
 	{
-		reset();
+		// reset();
 		init();
 	}
 
-	void init()
-	{
+	void init(){
 		uint8_t id_h, id_l;
 		readReg(reg_ID_h, id_h);
 		readReg(reg_ID_l, id_l);
@@ -733,6 +732,9 @@ public:
             );
 			throw HardwareError(HardwareError::WRONG_ID, msg);
 		}
+		xil_printf("INFO [OV9281.h::init()] Read back correct camera device ID\r\n");
+		return;
+
 		//[1]=0 System input clock from pad; Default read = 0x11
 		writeReg(0x3103, 0x11);
 		//[7]=1 Software reset; [6]=0 Software power down; Default=0x02
@@ -741,18 +743,17 @@ public:
 		usleep(1000000);
 
 		size_t i;
-		for (i = 0; i < sizeof(OV5640_cfg::cfg_init_) / sizeof(OV5640_cfg::cfg_init_[0]); ++i)
+		for (i = 0; i < sizeof(OV9281_cfg::cfg_init_) / sizeof(OV9281_cfg::cfg_init_[0]); ++i)
 		{
 			writeReg(
-                OV5640_cfg::cfg_init_[i].addr, 
-                OV5640_cfg::cfg_init_[i].data
+                OV9281_cfg::cfg_init_[i].addr, 
+                OV9281_cfg::cfg_init_[i].data
             );
 		}
 		//Stay in power down
 	}
 
-	Errc reset()
-	{
+	Errc reset(){
 		//Power cycle
 		gpio_.clearBit(gpio_.Bits::CAM_GPIO0);
 		usleep(1000000);
@@ -762,15 +763,14 @@ public:
 		return OK;
 	}
 
-	Errc set_mode(OV5640_cfg::mode_t mode)
-	{
-		if (mode >= OV5640_cfg::mode_t::MODE_END)
+	Errc set_mode(OV9281_cfg::mode_t mode){
+		if (mode >= OV9281_cfg::mode_t::MODE_END)
 			return ERR_LOGICAL;
 
 		//[7]=0 Software reset; [6]=1 Software power down; Default=0x02
 		writeReg(0x3008, 0x42);
 
-		auto cfg_mode = &OV5640_cfg::modes[mode];
+		auto cfg_mode = &OV9281_cfg::modes[mode];
 		writeConfig(cfg_mode->cfg, cfg_mode->cfg_size);
 
 		//[7]=0 Software reset; [6]=0 Software power down; Default=0x02
@@ -779,14 +779,13 @@ public:
         return OK;
 	}
 
-	Errc set_awb(OV5640_cfg::awb_t awb)
-	{
-		if (awb >= OV5640_cfg::awb_t::AWB_END)
+	Errc set_awb(OV9281_cfg::awb_t awb){
+		if (awb >= OV9281_cfg::awb_t::AWB_END)
 			return ERR_LOGICAL;
 		//[7]=0 Software reset; [6]=1 Software power down; Default=0x02
 		writeReg(0x3008, 0x42);
 
-		auto cfg_mode = &OV5640_cfg::awbs[awb];
+		auto cfg_mode = &OV9281_cfg::awbs[awb];
 		writeConfig(cfg_mode->cfg, cfg_mode->cfg_size);
 
 		//[7]=0 Software reset; [6]=0 Software power down; Default=0x02
@@ -795,24 +794,23 @@ public:
 		return OK;
 	}
 
-	Errc set_isp_format(OV5640_cfg::isp_format_t isp)
-	{
-		if (isp >= OV5640_cfg::isp_format_t::ISP_END)
+	Errc set_isp_format(OV9281_cfg::isp_format_t isp){
+		if (isp >= OV9281_cfg::isp_format_t::ISP_END)
 			return ERR_LOGICAL;
 		//[7]=0 Software reset; [6]=1 Software power down; Default=0x02
 		writeReg(0x3008, 0x42);
 
 		switch (isp)
 		{
-			case OV5640_cfg::isp_format_t::ISP_RGB:
+			case OV9281_cfg::isp_format_t::ISP_RGB:
 				writeReg(
-                    OV5640_cfg::OV5640_FORMAT_MUX_CONTROL, 
+                    OV9281_cfg::OV9281_FORMAT_MUX_CONTROL, 
                     0x01
                 );
 				break;
-			case OV5640_cfg::isp_format_t::ISP_RAW:
+			case OV9281_cfg::isp_format_t::ISP_RAW:
 				writeReg(
-                    OV5640_cfg::OV5640_FORMAT_MUX_CONTROL, 
+                    OV9281_cfg::OV9281_FORMAT_MUX_CONTROL, 
                     0x03
                 );
 				break;
@@ -826,21 +824,18 @@ public:
         return OK;
 	}
 
-	~OV5640() {}
+	~OV9281() {}
 
-	void set_test(OV5640_cfg::test_t test)
+	void set_test(OV9281_cfg::test_t test)
 	{
 		switch (test)
 		{
-			case OV5640_cfg::test_t::TEST_DISABLED:
-				writeReg(
-                    OV5640_cfg::OV5640_REG_PRE_ISP_TEST_SET1, 
-                    0x00
-                );
+			case OV9281_cfg::test_t::TEST_DISABLED:
+				writeReg(OV9281_cfg::OV9281_REG_PRE_ISP_TEST_SET1, 0x00);
 				break;
-			case OV5640_cfg::test_t::TEST_EIGHT_COLOR_BAR:
+			case OV9281_cfg::test_t::TEST_EIGHT_COLOR_BAR:
 				writeReg(
-                    OV5640_cfg::OV5640_REG_PRE_ISP_TEST_SET1, 
+                    OV9281_cfg::OV9281_REG_PRE_ISP_TEST_SET1, 
                     0x80
                 );
 				break;
@@ -892,26 +887,9 @@ public:
 		}
 	}
 
-	void writeRegLiquid(uint8_t const reg_data)
-    {
-        for (auto retry_count = retry_count_; retry_count > 0; --retry_count)
-        {
-            try
-            {
-                auto buf = std::vector<uint8_t>{reg_data};
-                iic_.write(dev_address2_, buf.data(), buf.size());
-                break; //If no exceptions, no mo retries
-            }
-            catch (I2C_Client::TransmitError const& e)
-            {
-                if (retry_count > 0) continue;
-                else throw HardwareError(HardwareError::IIC_NACK, e.what());
-            }
-        }
-    }
 
-	class HardwareError : public std::runtime_error
-	{
+
+	class HardwareError : public std::runtime_error{
 	public:
 		using Errc = enum {WRONG_ID = 1, IIC_NACK};
 		HardwareError(Errc errc, char const* msg) : std::runtime_error(msg), errc_(errc) {}
@@ -929,7 +907,7 @@ private:
         
 	}*/
 
-	void writeConfig(OV5640_cfg::config_word_t const* cfg, size_t cfg_size)
+	void writeConfig(OV9281_cfg::config_word_t const* cfg, size_t cfg_size)
 	{
 		for (size_t i=0; i<cfg_size; ++i)
 		{
@@ -940,10 +918,9 @@ private:
 private:
 	I2C_Client& iic_;
 	GPIO_Client& gpio_;
-	uint8_t dev_address_ = (0x78 >> 1);
-	uint8_t dev_address2_ = (0x46 >> 1);
-	uint8_t const dev_ID_h_ = 0x56;
-	uint8_t const dev_ID_l_ = 0x40;
+	uint8_t dev_address_ = (0xC0 >> 1); // Address is 0xC0 8b / 0x60 7b
+	uint8_t const dev_ID_h_ = 0x92;
+	uint8_t const dev_ID_l_ = 0x81;
 	uint16_t const reg_ID_h = 0x300A;
 	uint16_t const reg_ID_l = 0x300B;
 	unsigned int const retry_count_ = 10;
