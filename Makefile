@@ -1,20 +1,25 @@
 # Top-level Makefile for motion_capture project
 
-.PHONY: all vitis_build clean
+PROJ ?= zybo_ov9281
 
-all: vitis_build
+all:
+	@echo "Makefile for vivado and vitis build"
+	@echo "Projects are (zybo_ov9281, zybo_ov5640)"
+	@echo "    vitis_build   PROJ=<project>    Create vivado project, build, export, create and build vitis"
+	@echo "    vivado_build  PROJ=<project>    Create vivado project, build, export bitsream"
 
 # Identify the directory target
 # Only run if directory does not exist
-vivado/zybo_ov9281:
-	@if [ ! -d "vivado/zybo_ov9281" ]; then \
-		$(MAKE) -C vivado project; \
-	fi
+vivado_build:
+	$(MAKE) -C vivado/$(PROJ) clean
+	$(MAKE) -C vivado/$(PROJ) build
 
-vitis_build: vivado/zybo_ov9281
-	$(MAKE) -C vivado build
-	$(MAKE) -C vitis build
+vitis_build: vivado/$(PROJ)
+	$(MAKE) -C vivado/$(PROJ) build
+	$(MAKE) -C vitis/$(PROJ) build_vitis
 
 clean:
 	$(MAKE) -C vivado clean
 	$(MAKE) -C vitis clean
+
+.PHONY: all vitis_build clean

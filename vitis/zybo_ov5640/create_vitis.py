@@ -32,7 +32,7 @@ signal.signal(signal.SIGINT, signal_handler)
 # Import sources
 # Build app
 
-PROJECT_NAME = 'zybo_ov9281'
+PROJECT_NAME = 'zybo_ov5640'
 PLATFORM_NAME = f'{PROJECT_NAME}_platform'
 APP_NAME = f'{PROJECT_NAME}_app'
 
@@ -41,7 +41,7 @@ APP_NAME = f'{PROJECT_NAME}_app'
 # -----------------------------------------------------------------------------------
 script_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(script_dir, "src")
-xsa_path = os.path.abspath(os.path.join(script_dir, f"../vivado/{PROJECT_NAME}/{PROJECT_NAME}.xsa"))
+xsa_path = os.path.abspath(os.path.join(script_dir, f"../../vivado/{PROJECT_NAME}/{PROJECT_NAME}_proj/{PROJECT_NAME}_proj.xsa"))
 workspace_path = os.path.join(script_dir, "workspace")
 
 # -----------------------------------------------------------------------------------

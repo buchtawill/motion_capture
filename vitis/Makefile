@@ -1,7 +1,8 @@
-
-build:
-	vitis -s create_vitis.py
+PROJ ?= zybo_ov9281
 
 clean:
-	rm -rf workspace
-	rm -rf .wsdata
+	$(MAKE) -C zybo_ov5640 clean
+	$(MAKE) -C zybo_ov9281 clean
+
+build:
+	$(MAKE) -C $(PROJ) build_vitis

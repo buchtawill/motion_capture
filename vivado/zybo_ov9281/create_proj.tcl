@@ -59,7 +59,7 @@ proc checkRequiredFiles { origin_dir} {
 
   #  "[file normalize "$origin_dir/../../../vivado_workspace/Zybo-Z7-HW/Zybo-Z7-HW.ipdefs/repo"]"]"
   set paths [list \
- "[file normalize "$origin_dir/ip_repo"]"]"\ 
+ "[file normalize "$origin_dir/../ip_repo"]"]"\ 
   ] #"
   foreach ipath $paths {
     if { ![file isdirectory $ipath] } {
@@ -74,7 +74,7 @@ proc checkRequiredFiles { origin_dir} {
 set origin_dir [file dirname [info script]]
 
 # Set the project name
-set _xil_proj_name_ "zybo_ov9281"
+set _xil_proj_name_ "zybo_ov9281_proj"
 
 # Use project name variable, if specified in the tcl shell
 if { [info exists ::user_project_name] } {
@@ -176,7 +176,7 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 # Set IP repository paths
 set obj [get_filesets sources_1]
 if { $obj != {} } {
-   set_property "ip_repo_paths" "[file normalize "$origin_dir/ip_repo/repo"]" $obj
+   set_property "ip_repo_paths" "[file normalize "$origin_dir/../ip_repo/repo"]" $obj
   #  set_property "ip_repo_paths" "[file normalize "/tools/Xilinx/Vivado/2024.1/data/ip"]" $obj
 
    # Rebuild user ip_repo's index before adding any source files

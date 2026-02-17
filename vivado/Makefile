@@ -1,17 +1,16 @@
+PROJ ?= zybo_ov9281
+
 all:
-	@echo "project: make the project"
-	@echo "build:   Run synthesis, implementation, bitstream"
+	@echo "Makefile for vivado projects."
+	@echo "    proj  PROJ=<project>    Create specified vivado project (zybo_ov9281, zybo_ov5640)"
+	@echo "    build PROJ=<project>    Build and export the bitstream for the specified project"
 
 clean:
-	rm -f vivado*.jou vivado*.log
-	rm -rf .Xil NA zybo_ov9281
+	$(MAKE) -C zybo_ov5640 clean
+	$(MAKE) -C zybo_ov9281 clean
 
-zybo_ov9281: create_proj.tcl
-	vivado -mode batch -source create_proj.tcl
+proj:
+	$(MAKE) -C $(PROJ) proj
 
-project: clean zybo_ov9281
-
-build: zybo_ov9281
-	vivado -mode batch -source export_bitstream.tcl
-
-.PHONY: all clean project build
+build:
+	$(MAKE) -C $(PROJ) build
