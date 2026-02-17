@@ -1,3 +1,6 @@
+# For help building vitis scripts, create a project in vitis IDE and
+# view the build.py under logs
+
 import vitis
 import os
 import sys
