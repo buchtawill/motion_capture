@@ -56,9 +56,9 @@ int main()
 
     volatile uint8_t* fb = (uint8_t*)MEM_BASE_ADDR;
 	for(u32 i = 0; i < 1920*1080*3; i+=3){
-		fb[i]   = 0xFF; // Green
+		fb[i]   = 0x00; // Green
 		fb[i+1] = 0xFF; // Blue
-		fb[i+2] = 0x00; // Red
+		fb[i+2] = 0xFF; // Red
 	}
     Xil_DCacheFlush();
 
@@ -196,13 +196,13 @@ int main()
             switch (read_char1) 
             {
 			case '1':
-				cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RGB);
-				xil_printf("Settings change done.\r\n");
-				break;
-			case '2':
-				cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RAW);
-				xil_printf("Settings change done.\r\n");
-				break;
+			// 	cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RGB);
+			// 	xil_printf("Settings change done.\r\n");
+			// 	break;
+			// case '2':
+			// 	cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RAW);
+			// 	xil_printf("Settings change done.\r\n");
+			// 	break;
 			default:
 				xil_printf("\r\n  Selection is outside the available options! Please retry...");
 			}
@@ -455,7 +455,7 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
         (CR_RESET_MASK & ~CR_ENABLE_MASK)
     );
 #if (DEBUG_EN == 0x0)
-    cam.reset();
+    // cam.reset();
 #endif
     vdma_driver.configureWrite(
         timing[static_cast<int>(res)].h_active,
@@ -465,7 +465,7 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
     Xil_Out32(GAMMA_BASE_ADDR, 3);
     // TODO CSI-2, D-PHY config here
 #if (DEBUG_EN == 0x0)
-    cam.init();
+    // cam.init();
     vdma_driver.enableWrite();
 #endif
     MIPI_CSI_2_RX_mWriteReg(
@@ -479,8 +479,8 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
         CR_ENABLE_MASK
     );
 #if (DEBUG_EN == 0x0)
-    cam.set_mode(mode);
-    cam.set_awb(OV9281_cfg::awb_t::AWB_ADVANCED);
+    // cam.set_mode(mode);
+    // cam.set_awb(OV9281_cfg::awb_t::AWB_ADVANCED);
 #endif
     // Bring up output pipeline back-to-front
     vid.reset();
