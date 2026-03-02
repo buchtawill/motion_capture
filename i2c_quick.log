@@ -1,0 +1,258 @@
+   CameraManager-2370    [002] .....   853.298746: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [48-00-20]
+   CameraManager-2370    [002] .....   853.299203: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.299212: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [03-02-32]
+   CameraManager-2370    [002] .....   853.299647: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.299658: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [03-0e-02]
+   CameraManager-2370    [002] .....   853.300091: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.300099: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-01-00]
+   CameraManager-2370    [002] .....   853.300521: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.300529: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-04-00]
+   CameraManager-2370    [002] .....   853.300946: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.300951: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-05-00]
+   CameraManager-2370    [002] .....   853.301366: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.301370: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-06-04]
+   CameraManager-2370    [002] .....   853.301791: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.301802: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-11-0a]
+   CameraManager-2370    [002] .....   853.302229: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.302237: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-13-18]
+   CameraManager-2370    [002] .....   853.302643: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.302646: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-1c-f0]
+   CameraManager-2370    [002] .....   853.303052: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.303062: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-22-01]
+   CameraManager-2370    [002] .....   853.303471: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.303474: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-30-10]
+   CameraManager-2370    [002] .....   853.303879: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.303888: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-39-32]
+   CameraManager-2370    [002] .....   853.304298: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.304300: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [30-3a-00]
+   CameraManager-2370    [002] .....   853.304707: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.304709: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-03-08]
+   CameraManager-2370    [002] .....   853.305115: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.305117: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-05-8c]
+   CameraManager-2370    [002] .....   853.305524: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.305537: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-07-03]
+   CameraManager-2370    [002] .....   853.305944: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.305946: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-08-00]
+   CameraManager-2370    [002] .....   853.306351: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.306360: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-10-80]
+   CameraManager-2370    [002] .....   853.306767: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.306775: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-11-a0]
+   CameraManager-2370    [002] .....   853.307182: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.307191: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-20-6e]
+   CameraManager-2370    [002] .....   853.307598: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.307606: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-32-56]
+   CameraManager-2370    [002] .....   853.308013: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.308021: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-33-78]
+   CameraManager-2370    [002] .....   853.308428: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.308430: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-66-00]
+   CameraManager-2370    [002] .....   853.308844: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.308847: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-6f-5a]
+   CameraManager-2370    [002] .....   853.309256: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.309272: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-80-84]
+   CameraManager-2370    [002] .....   853.309683: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.309686: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-12-80]
+   CameraManager-2370    [002] .....   853.310100: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.310104: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-2d-22]
+   CameraManager-2370    [002] .....   853.310516: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.310519: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-31-80]
+   CameraManager-2370    [002] .....   853.310946: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.310953: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-32-30]
+   CameraManager-2370    [002] .....   853.311394: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.311405: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-7d-22]
+   CameraManager-2370    [002] .....   853.311859: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.311871: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-88-02]
+   CameraManager-2370    [002] .....   853.312307: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.312314: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-89-a4]
+   CameraManager-2370    [002] .....   853.312741: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.312747: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-8a-00]
+   CameraManager-2370    [002] .....   853.313165: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.313169: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-8b-4a]
+   CameraManager-2370    [002] .....   853.313582: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.313584: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-99-20]
+   CameraManager-2370    [002] .....   853.313992: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.313995: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-81-42]
+   CameraManager-2370    [002] .....   853.314403: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.314405: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-a8-02]
+   CameraManager-2370    [002] .....   853.314815: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.314828: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-a9-80]
+   CameraManager-2370    [002] .....   853.315235: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.315237: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-b1-00]
+   CameraManager-2370    [002] .....   853.315637: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.315646: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-c4-00]
+   CameraManager-2370    [002] .....   853.316053: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.316061: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-c5-c0]
+   CameraManager-2370    [002] .....   853.316468: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.316477: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-c6-04]
+   CameraManager-2370    [002] .....   853.316884: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.316892: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-c7-80]
+   CameraManager-2370    [002] .....   853.317299: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.317307: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [39-20-ff]
+   CameraManager-2370    [002] .....   853.317714: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.317717: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [40-10-40]
+   CameraManager-2370    [002] .....   853.318123: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.318126: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [40-43-40]
+   CameraManager-2370    [002] .....   853.318531: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.318540: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [43-07-30]
+   CameraManager-2370    [002] .....   853.318947: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.318956: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [43-17-00]
+   CameraManager-2370    [002] .....   853.319363: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.319365: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [45-01-00]
+   CameraManager-2370    [002] .....   853.319771: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.319780: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [45-0a-08]
+   CameraManager-2370    [002] .....   853.320187: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.320195: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [46-01-04]
+   CameraManager-2370    [002] .....   853.320602: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.320604: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [47-0f-00]
+   CameraManager-2370    [002] .....   853.321010: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.321019: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [4f-07-00]
+   CameraManager-2370    [002] .....   853.321427: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.321437: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [50-00-9f]
+   CameraManager-2370    [002] .....   853.321844: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.321846: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [50-01-00]
+   CameraManager-2370    [002] .....   853.322252: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.322260: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [5e-00-00]
+   CameraManager-2370    [002] .....   853.322667: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.322675: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [5d-00-07]
+   CameraManager-2370    [002] .....   853.323082: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.323090: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [5d-01-00]
+   CameraManager-2370    [002] .....   853.323498: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.323506: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [01-01-01]
+   CameraManager-2370    [002] .....   853.323913: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.323921: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [10-00-03]
+   CameraManager-2370    [002] .....   853.324328: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.324336: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [5a-08-84]
+   CameraManager-2370    [002] .....   853.324743: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.324751: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [03-0d-50]
+   CameraManager-2370    [002] .....   853.325158: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.325167: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [36-62-05]
+   CameraManager-2370    [002] .....   853.325575: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.325587: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [37-78-10]
+   CameraManager-2370    [002] .....   853.325998: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.326000: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-00-00]
+   CameraManager-2370    [002] .....   853.326415: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.326420: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-01-00]
+   CameraManager-2370    [002] .....   853.326839: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.326846: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-02-00]
+   CameraManager-2370    [002] .....   853.327281: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.327293: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-03-00]
+   CameraManager-2370    [002] .....   853.327739: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.327749: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-04-05]
+   CameraManager-2370    [002] .....   853.328168: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.328172: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-05-0f]
+   CameraManager-2370    [002] .....   853.328591: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.328596: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-06-03]
+   CameraManager-2370    [002] .....   853.329008: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.329010: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-07-2f]
+   CameraManager-2370    [002] .....   853.329418: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.329420: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-08-02]
+   CameraManager-2370    [002] .....   853.329855: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.329865: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-09-80]
+   CameraManager-2370    [002] .....   853.330274: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.330282: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-0a-01]
+   CameraManager-2370    [002] .....   853.330698: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.330700: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-0b-90]
+   CameraManager-2370    [002] .....   853.331110: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.331126: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-10-00]
+   CameraManager-2370    [002] .....   853.331533: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.331535: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-11-04]
+   CameraManager-2370    [002] .....   853.331941: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.331949: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-12-00]
+   CameraManager-2370    [002] .....   853.332356: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.332365: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-13-04]
+   CameraManager-2370    [002] .....   853.332772: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.332780: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-14-31]
+   CameraManager-2370    [002] .....   853.333187: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.333195: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-15-22]
+   CameraManager-2370    [002] .....   853.333602: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.333615: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-20-60]
+   CameraManager-2370    [002] .....   853.334022: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.334024: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-21-01]
+   CameraManager-2370    [002] .....   853.334429: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.334438: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [40-08-02]
+   CameraManager-2370    [002] .....   853.334845: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.334853: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [40-09-05]
+   CameraManager-2370    [002] .....   853.335260: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.335268: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [40-0c-00]
+   CameraManager-2370    [002] .....   853.335675: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.335683: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [40-0d-03]
+   CameraManager-2370    [002] .....   853.336090: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.336099: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [45-07-03]
+   CameraManager-2370    [002] .....   853.336506: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.336514: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [45-09-80]
+   CameraManager-2370    [002] .....   853.336921: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.336932: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.337339: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.337341: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-06-80]
+   CameraManager-2370    [002] .....   853.337927: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.337939: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-10]
+   CameraManager-2370    [002] .....   853.338346: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.338348: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.338754: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.338765: i2c_write: i2c-10 #0 a=060 f=0000 l=4 [38-0e-0d-9d]
+   CameraManager-2370    [002] .....   853.339270: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.339273: i2c_write: i2c-10 #0 a=060 f=0000 l=2 [38-20]
+   CameraManager-2370    [002] .....   853.339273: i2c_read: i2c-10 #1 a=060 f=0001 l=1
+   CameraManager-2370    [002] .....   853.339782: i2c_reply: i2c-10 #1 a=060 f=0001 l=1 [60]
+   CameraManager-2370    [002] .....   853.339784: i2c_result: i2c-10 n=2 ret=2
+   CameraManager-2370    [002] .....   853.339794: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-20-60]
+   CameraManager-2370    [002] .....   853.340202: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.340204: i2c_write: i2c-10 #0 a=060 f=0000 l=2 [38-21]
+   CameraManager-2370    [002] .....   853.340204: i2c_read: i2c-10 #1 a=060 f=0001 l=1
+   CameraManager-2370    [002] .....   853.340713: i2c_reply: i2c-10 #1 a=060 f=0001 l=1 [01]
+   CameraManager-2370    [002] .....   853.340722: i2c_result: i2c-10 n=2 ret=2
+   CameraManager-2370    [002] .....   853.340723: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [38-21-01]
+   CameraManager-2370    [002] .....   853.341129: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.341139: i2c_write: i2c-10 #0 a=060 f=0000 l=4 [38-0c-02-fd]
+   CameraManager-2370    [002] .....   853.341631: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.341642: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [01-00-01]
+   CameraManager-2370    [002] .....   853.342050: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.410827: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.411614: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.411665: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-d8-40]
+   CameraManager-2370    [002] .....   853.412265: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.412285: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-80]
+   CameraManager-2370    [002] .....   853.412699: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.412711: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.413119: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.510805: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.511554: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.511562: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-d8-40]
+   CameraManager-2370    [002] .....   853.512160: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.512165: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-33]
+   CameraManager-2370    [002] .....   853.512571: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.512575: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.512979: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.610667: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.611123: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.611129: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-89-e0]
+   CameraManager-2370    [002] .....   853.611723: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.611729: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-20]
+   CameraManager-2370    [002] .....   853.612141: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.612147: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.612556: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.710559: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.711022: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.711037: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-78-30]
+   CameraManager-2370    [002] .....   853.711627: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.711636: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-20]
+   CameraManager-2370    [002] .....   853.712045: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.712047: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.712449: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.810567: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.810984: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.810986: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-7a-f0]
+   CameraManager-2370    [002] .....   853.811568: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.811571: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-20]
+   CameraManager-2370    [002] .....   853.811972: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.811981: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.812383: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.843900: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-01]
+   CameraManager-2370    [002] .....   853.844316: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.844319: i2c_write: i2c-10 #0 a=060 f=0000 l=5 [35-00-00-7c-80]
+   CameraManager-2370    [002] .....   853.844899: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.844909: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [35-09-20]
+   CameraManager-2370    [002] .....   853.845311: i2c_result: i2c-10 n=1 ret=1
+   CameraManager-2370    [002] .....   853.845313: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [33-08-00]
+   CameraManager-2370    [002] .....   853.845714: i2c_result: i2c-10 n=1 ret=1
+  rpicam-:disk$0-2381    [002] .....   855.771375: i2c_write: i2c-10 #0 a=060 f=0000 l=3 [01-00-00]
+  rpicam-:disk$0-2381    [002] .....   855.771812: i2c_result: i2c-10 n=1 ret=1
