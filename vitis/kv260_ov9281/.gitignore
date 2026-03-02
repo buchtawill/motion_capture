@@ -1,0 +1,12 @@
+*.log
+*.jou
+*.zip
+system_wrapper
+.metadata
+RemoteSystemTempFiles
+_ide
+Debug
+workspace
+.Xil
+xrc.log
+*.cache
