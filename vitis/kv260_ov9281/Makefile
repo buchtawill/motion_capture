@@ -1,8 +1,8 @@
 
 boot: clean build_vitis
-	xsdb boot_kv260_jtag.tcl
+	xsdb program_and_boot.tcl
 
-build_vitis:
+vitis_build:
 	vitis -s create_vitis.py
 
 clean:

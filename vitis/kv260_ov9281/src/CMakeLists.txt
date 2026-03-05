@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/Hello_worldExample.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/UserConfig.cmake)
-set(APP_NAME zybo_ov9281_app)
+set(APP_NAME kv260_ov9281_app)
 project(${APP_NAME})
 
 enable_language(C ASM CXX)

@@ -29,16 +29,17 @@ puts "INFO \[boot_kv260_jtag.tcl\] Waiting for boot mode change"
 after 2000
 targets -set -filter {name =~ "PSU"}
 puts "INFO \[boot_kv260_jtag.tcl\] Loading FPGA bitstream"
-fpga "$vitis_workspace_dir/$platform_name/export/$platform_name/hw/sdt/kv260_ov9281_proj.bit"
+fpga "$vitis_workspace_dir/$platform_name/hw/sdt/kv260_ov9281_proj.bit"
+# workspace/kv260_ov9281_platform/hw/sdt/kv260_ov9281_proj.bit
 mwr 0xffca0038 0x1FF
 
 # Download pmufw.elf
-puts "INFO \[boot_kv260_jtag.tcl\] Downloading PMU firmware"
-targets -set -filter {name =~ "MicroBlaze PMU"}
-after 500
-dow $vitis_workspace_dir/$platform_name/export/$platform_name/sw/qemu/pmufw.elf
-con
-after 500
+# puts "INFO \[boot_kv260_jtag.tcl\] Downloading PMU firmware"
+# targets -set -filter {name =~ "MicroBlaze PMU"}
+# after 500
+# dow $vitis_workspace_dir/$platform_name/export/$platform_name/sw/qemu/pmufw.elf
+# con
+# after 500
 
 # Select A53 Core 0
 puts "INFO \[boot_kv260_jtag.tcl\] Selecting A53 Core 0 and downloading FSBL"
