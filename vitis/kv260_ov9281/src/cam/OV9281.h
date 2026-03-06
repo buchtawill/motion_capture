@@ -1,19 +1,13 @@
-/*
- * OV9281.h
- *
- *  Created on: May 26, 2016
- *      Author: Elod
- */
-
 #ifndef OV9281_H_
 #define OV9281_H_
 
-#include <sstream>
-#include <iostream>
 #include <cstdio>
-#include <climits>
+#include <cstdint>
 
 #include "sleep.h"
+#include "xil_printf.h"
+#include "xstatus.h"
+#include "pl_iic.hpp"
 
 #define SIZEOF_ARRAY(x) 			sizeof(x)/sizeof(x[0])
 #define MAP_ENUM_TO_CFG(en, cfg) 	en, cfg, SIZEOF_ARRAY(cfg)
@@ -489,222 +483,98 @@ namespace OV9281_cfg
 	// };
 }
 
-class OV9281
-{
+class OV9281 {
 public:
-	class HardwareError;
+    // Takes a reference to an already-init'd PL_IIC instance.
+    // Does NOT call init() — the caller must do so explicitly.
+    OV9281(PL_IIC& iic) : iic_(iic) {}
 
-	OV9281(I2C_Client& iic, GPIO_Client& gpio) : iic_(iic), gpio_(gpio){
-		// reset();
-		init();
-	}
+    ~OV9281() {}
 
-	int init(){
-		uint8_t id_h, id_l;
-		readReg(reg_ID_h, id_h);
-		readReg(reg_ID_l, id_l);
+    // Confirm the device is reachable by reading the chip-ID registers.
+    // Returns XST_SUCCESS when ID matches 0x9281, XST_FAILURE otherwise.
+    int init() {
+        u8 id_h = 0, id_l = 0;
+        if (iic_.reg16_read(dev_address_, reg_ID_h_, &id_h, 1) != XST_SUCCESS ||
+            iic_.reg16_read(dev_address_, reg_ID_l_, &id_l, 1) != XST_SUCCESS) {
+            xil_printf("ERROR [OV9281::init()] I2C read failed\r\n");
+            return XST_FAILURE;
+        }
+        if (id_h != expected_ID_h_ || id_l != expected_ID_l_) {
+            xil_printf("ERROR [OV9281::init()] Wrong ID: got 0x%02X%02X, expected 0x%02X%02X\r\n",
+                       id_h, id_l, expected_ID_h_, expected_ID_l_);
+            return XST_FAILURE;
+        }
+        xil_printf("INFO [OV9281::init()] Chip ID OK: 0x%02X%02X\r\n", id_h, id_l);
+        return XST_SUCCESS;
+    }
 
-		if (id_h != dev_ID_h_ || id_l != dev_ID_l_){
-			char msg[100];
-			snprintf(msg, sizeof(msg), "Got %02x %02x. Expected %02x %02x\r\n", 
-                     id_h, id_l, dev_ID_h_, dev_ID_l_
-            );
-			throw HardwareError(HardwareError::WRONG_ID, msg);
-		}
-		xil_printf("INFO [OV9281.h::init()] Read back correct camera device ID\r\n");
+    // Write the default register sequence (common + 1280x720 + 10-bit),
+    // then start streaming and validate the written values.
+    // Returns XST_SUCCESS if all registers read back correctly.
+    int apply_default_mode() {
+        int ret;
+        ret = write_reg_array(OV9281_cfg::ov9281_common_regs);
+        if (ret != XST_SUCCESS) return ret;
+        ret = write_reg_array(OV9281_cfg::ov9281_1280x720_regs);
+        if (ret != XST_SUCCESS) return ret;
+        ret = write_reg_array(OV9281_cfg::op_8bit);
+        if (ret != XST_SUCCESS) return ret;
 
-		// usleep(1000000);
+        if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
+                             OV9281_MODE_STREAMING) != XST_SUCCESS) {
+            xil_printf("ERROR [OV9281::apply_default_mode()] Failed to start streaming\r\n");
+            return XST_FAILURE;
+        }
+        xil_printf("INFO [OV9281::apply_default_mode()] Registers written, validating...\r\n");
 
-		// readReg(OV9281_REG_MODE_SELECT, stream_val);
-		// xil_printf("INFO [OV9281.h::init()] Mode select pre-write:  0x%x\r\n", stream_val);
-		uint8_t stream_val = 0;
-		int ret; 
-		ret = write_reg_array(OV9281_cfg::ov9281_common_regs);
-		ret = write_reg_array(OV9281_cfg::ov9281_1280x720_regs);
-		ret = write_reg_array(OV9281_cfg::op_10bit);
-		writeReg(OV9281_REG_MODE_SELECT, OV9281_MODE_STREAMING);
-		xil_printf("INFO [OV9281.h::init()] Configs programmed to camera, reading back...\r\n");
-		ret = validate_reg_array(OV9281_cfg::ov9281_common_regs);
-		ret = validate_reg_array(OV9281_cfg::ov9281_1280x720_regs);
-		ret = validate_reg_array(OV9281_cfg::op_10bit);
-        return ret;
-	}
+        ret = validate_reg_array(OV9281_cfg::ov9281_common_regs);
+        // if (ret != XST_SUCCESS) return ret;
+        ret = validate_reg_array(OV9281_cfg::ov9281_1280x720_regs);
+        // if (ret != XST_SUCCESS) return ret;
+        ret = validate_reg_array(OV9281_cfg::op_8bit);
+        // if (ret != XST_SUCCESS) return ret;
 
-	Errc reset(){
-		//Power cycle
-		gpio_.clearBit(gpio_.Bits::CAM_GPIO0);
-		usleep(1000000);
-		gpio_.setBit(gpio_.Bits::CAM_GPIO0);
-		usleep(1000000);
-
-		return OK;
-	}
-
-	Errc set_mode(OV9281_cfg::mode_t mode){
-		// if (mode >= OV9281_cfg::mode_t::MODE_END)
-		// 	return ERR_LOGICAL;
-		//
-		// //[7]=0 Software reset; [6]=1 Software power down; Default=0x02
-		// writeReg(0x3008, 0x42);
-		//
-		// auto cfg_mode = &OV9281_cfg::modes[mode];
-		// writeConfig(cfg_mode->cfg, cfg_mode->cfg_size);
-		//
-		// //[7]=0 Software reset; [6]=0 Software power down; Default=0x02
-		// writeReg(0x3008, 0x02);
-	
-        return OK;
-	}
-
-	Errc set_awb(OV9281_cfg::awb_t awb){
-		// if (awb >= OV9281_cfg::awb_t::AWB_END)
-		// 	return ERR_LOGICAL;
-		// //[7]=0 Software reset; [6]=1 Software power down; Default=0x02
-		// writeReg(0x3008, 0x42);
-	    //
-		// auto cfg_mode = &OV9281_cfg::awbs[awb];
-		// writeConfig(cfg_mode->cfg, cfg_mode->cfg_size);
-	    //
-		// //[7]=0 Software reset; [6]=0 Software power down; Default=0x02
-		// writeReg(0x3008, 0x02);
-    
-		return OK;
-	}
-
-	Errc set_isp_format(OV9281_cfg::isp_format_t isp){
-		if (isp >= OV9281_cfg::isp_format_t::ISP_END)
-			return ERR_LOGICAL;
-		//[7]=0 Software reset; [6]=1 Software power down; Default=0x02
-		writeReg(0x3008, 0x42);
-
-		switch (isp)
-		{
-			case OV9281_cfg::isp_format_t::ISP_RGB:
-				writeReg(
-                    OV9281_cfg::OV9281_FORMAT_MUX_CONTROL, 
-                    0x01
-                );
-				break;
-			case OV9281_cfg::isp_format_t::ISP_RAW:
-				writeReg(
-                    OV9281_cfg::OV9281_FORMAT_MUX_CONTROL, 
-                    0x03
-                );
-				break;
-			default:
-				break;
-		}
-
-		//[7]=0 Software reset; [6]=0 Software power down; Default=0x02
-		writeReg(0x3008, 0x02);
-
-        return OK;
-	}
-
-	~OV9281() {}
-
-	void set_test(OV9281_cfg::test_t test){
-		switch (test)
-		{
-			case OV9281_cfg::test_t::TEST_DISABLED:
-				writeReg(OV9281_cfg::OV9281_REG_PRE_ISP_TEST_SET1, 0x00);
-				break;
-			case OV9281_cfg::test_t::TEST_EIGHT_COLOR_BAR:
-				writeReg(
-                    OV9281_cfg::OV9281_REG_PRE_ISP_TEST_SET1, 
-                    0x80
-                );
-				break;
-			default:
-				break;
-		}
-	}
-
-	void readReg(uint16_t reg_addr, uint8_t& buf){
-		for (auto retry_count = retry_count_; retry_count > 0; --retry_count){
-			try
-			{
-				auto buf_addr = std::vector<uint8_t>{(uint8_t)(reg_addr>>8), (uint8_t)reg_addr};
-				iic_.write(dev_address_, buf_addr.data(), buf_addr.size());
-				iic_.read(dev_address_, &buf, 1);
-				break; //If no exceptions, no more retries
-			}
-			catch (I2C_Client::TransmitError const& e)
-			{
-				if (retry_count > 0)
-				{
-					continue;
-				}
-				else
-				{
-					throw HardwareError(HardwareError::IIC_NACK, e.what());
-				}
-			}
-		}
-	}
-
-    // TODO: Change to return int value
-	int writeReg(uint16_t reg_addr, uint8_t const reg_data){
-		for (auto retry_count = retry_count_; retry_count > 0; --retry_count){
-			try{
-				auto buf = std::vector<uint8_t>{(uint8_t)(reg_addr>>8), (uint8_t)reg_addr, reg_data};
-				iic_.write(dev_address_, buf.data(), buf.size());
-				break; //If no exceptions, no mo retries
-			}
-			catch (I2C_Client::TransmitError const& e){
-				if (retry_count > 0) continue;
-				else throw HardwareError(HardwareError::IIC_NACK, e.what());
-			}
-		}
-        return 0;
-	}
-
-	class HardwareError : public std::runtime_error{
-	public:
-		using Errc = enum {WRONG_ID = 1, IIC_NACK};
-		HardwareError(Errc errc, char const* msg) : std::runtime_error(msg), errc_(errc) {}
-		Errc errc() const { return errc_; }
-	private:
-		Errc errc_;
-	};
+        xil_printf("INFO [OV9281::apply_default_mode()] All registers validated OK\r\n");
+        return XST_SUCCESS;
+    }
 
 private:
+    int write_reg_array(const struct regval *regs) {
+        for (int i = 0; regs[i].addr != REG_NULL; i++) {
+            if (iic_.reg16_write(dev_address_, regs[i].addr, regs[i].val) != XST_SUCCESS) {
+                xil_printf("ERROR [OV9281::write_reg_array] Write failed @ 0x%04X\r\n",
+                           regs[i].addr);
+                return XST_FAILURE;
+            }
+        }
+        return XST_SUCCESS;
+    }
 
-	int write_reg_array(const struct regval *regs){
-		u32 i;
-		int ret = 0;
+    int validate_reg_array(const struct regval *regs) {
+        for (int i = 0; regs[i].addr != REG_NULL; i++) {
+            u8 readback = 0;
+            if (iic_.reg16_read(dev_address_, regs[i].addr, &readback, 1) != XST_SUCCESS) {
+                xil_printf("ERROR [OV9281::validate_reg_array] Read failed @ 0x%04X\r\n",
+                           regs[i].addr);
+                return XST_FAILURE;
+            }
+            if (readback != regs[i].val) {
+                xil_printf("ERROR [OV9281::validate_reg_array] Mismatch @ 0x%04X: "
+                           "got 0x%02X expected 0x%02X\r\n",
+                           regs[i].addr, readback, regs[i].val);
+                // return XST_FAILURE;
+            }
+        }
+        return XST_SUCCESS;
+    }
 
-		for (i = 0; ret == 0 && regs[i].addr != REG_NULL; i++)
-			ret = writeReg(regs[i].addr, regs[i].val);
-
-		return ret;
-	}
-
-	int validate_reg_array(const struct regval *regs){
-		u32 i;
-		int ret = 0;
-
-		for(i = 0; ret == 0 && regs[i].addr != REG_NULL; i++){
-			u8 data_recvd;
-			readReg(regs[i].addr, data_recvd);
-			if(data_recvd != regs[i].val){
-				xil_printf("ERROR [OV9281::validate_reg_array] Mismatch @ 0x%X: got 0x%X expected 0x%X\r\n", regs[i].addr, data_recvd, regs[i].val);
-				ret = 1;
-			}
-		}
-		xil_printf("INFO [OV9281::validate_reg_array] Registers properly written\r\n");
-		return ret;
-	}
-
-private:
-	I2C_Client& iic_;
-	GPIO_Client& gpio_;
-	uint8_t  const dev_address_ = (0xC0 >> 1); // Address is 0xC0 8b / 0x60 7b
-	uint8_t  const dev_ID_h_ = 0x92;
-	uint8_t  const dev_ID_l_ = 0x81;
-	uint16_t const reg_ID_h = 0x300A;
-	uint16_t const reg_ID_l = 0x300B;
-	uint16_t       retry_count_ = 10;
+    PL_IIC&  iic_;
+    static constexpr u8   dev_address_   = (0xC0 >> 1); // 7-bit: 0x60
+    static constexpr u8   expected_ID_h_ = 0x92;
+    static constexpr u8   expected_ID_l_ = 0x81;
+    static constexpr u16  reg_ID_h_      = 0x300A;
+    static constexpr u16  reg_ID_l_      = 0x300B;
 };
 
 } /* namespace digilent */
