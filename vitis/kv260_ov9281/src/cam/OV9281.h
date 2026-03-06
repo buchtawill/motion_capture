@@ -15,9 +15,6 @@
 
 #include "sleep.h"
 
-#include "I2C_Client.h"
-#include "GPIO_Client.h"
-
 #define SIZEOF_ARRAY(x) 			sizeof(x)/sizeof(x[0])
 #define MAP_ENUM_TO_CFG(en, cfg) 	en, cfg, SIZEOF_ARRAY(cfg)
 #define REG_NULL					0xFFFF
