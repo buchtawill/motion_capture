@@ -57,15 +57,43 @@ timing_t const timing[] = {
     {Resolution::R640_480_60_NN, 640, 16, 96, 48, timing_t::NEG, 480, 10, 2, 33, timing_t::NEG, 25000000}
 };
 
-// ─── Helper: Detect device by attempting a 0-byte write ──────────────────────
-//  XIic_Send returns the number of bytes sent. On NACK (no device), it returns 0.
-static int i2c_detect(u32 BaseAddr, u8 SlaveAddr) {
-    u8 dummy = 0;
-    int ret = XIic_Send(BaseAddr, SlaveAddr, &dummy, 0, XIIC_STOP);
-    // A successful probe returns 0 (0 bytes sent, but ACK received)
-    // On NACK or error, the controller will return an error status
-    // In practice with AXI IIC, check that no bus error occurred
-    return (ret >= 0) ? XST_SUCCESS : XST_FAILURE;
+// ─── Polled I2C helpers ───────────────────────────────────────────────────────
+// XIic_Send / XIic_Recv are polled and work directly on the base address.
+// They do not require XIic_Start() (which is for interrupt-driven mode).
+// Both return the number of bytes transferred; a mismatch means NACK or error.
+
+// Write `len` bytes to 7-bit slave `addr`. Returns XST_SUCCESS or XST_FAILURE.
+static int i2c_write(UINTPTR base, u8 addr, u8 *data, unsigned len)
+{
+    unsigned sent = XIic_Send(base, addr, data, len, XIIC_STOP);
+    return (sent == len) ? XST_SUCCESS : XST_FAILURE;
+}
+
+// Read `len` bytes from 7-bit slave `addr`. Returns XST_SUCCESS or XST_FAILURE.
+static int i2c_read(UINTPTR base, u8 addr, u8 *buf, unsigned len)
+{
+    unsigned rcvd = XIic_Recv(base, addr, buf, len, XIIC_STOP);
+    return (rcvd == len) ? XST_SUCCESS : XST_FAILURE;
+}
+
+// Read `data_len` bytes from 16-bit register `reg` of slave `addr`.
+// Issues: START + addr+W + reg_hi + reg_lo + REPEATED_START + addr+R + data + STOP
+static int i2c_reg16_read(UINTPTR base, u8 addr, u16 reg,
+                          u8 *buf, unsigned data_len)
+{
+    u8 reg_bytes[2] = { (u8)(reg >> 8), (u8)(reg & 0xFF) };
+    unsigned sent = XIic_Send(base, addr, reg_bytes, 2, XIIC_REPEATED_START);
+    if (sent != 2) return XST_FAILURE;
+    unsigned rcvd = XIic_Recv(base, addr, buf, data_len, XIIC_STOP);
+    return (rcvd == data_len) ? XST_SUCCESS : XST_FAILURE;
+}
+
+// Write 1 byte `val` to 16-bit register `reg` of slave `addr`.
+static int i2c_reg16_write(UINTPTR base, u8 addr, u16 reg, u8 val)
+{
+    u8 buf[3] = { (u8)(reg >> 8), (u8)(reg & 0xFF), val };
+    unsigned sent = XIic_Send(base, addr, buf, 3, XIIC_STOP);
+    return (sent == 3) ? XST_SUCCESS : XST_FAILURE;
 }
 
 XUartPs uart_instance;
@@ -110,89 +138,97 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
 
 int main() {
     XStatus status;
-    uint8_t  mux_address = 0x74;
-    uint8_t  cam_address = (0xC0 >> 1);
-    uint16_t cam_id_l    = 0x300B;
-    uint16_t cam_id_h    = 0x300A;
-
-    u8 mux_status = 0;
-    u8 rx_data[2] = {0};
+    const uint8_t  cam_address   = (0xC0 >> 1); // OV9281 7-bit I2C address
+    const uint16_t cam_id_reg_h  = 0x300A;       // OV9281 chip-ID high-byte register
+    const uint16_t cam_id_reg_l  = 0x300B;       // OV9281 chip-ID low-byte register
 
     XIic_Config *pi2c_cfg = NULL;
     XIic        i2c_instance;
 
-    xil_printf("Hello world from the KV260 OV9281\r\n");
+    xil_printf("KV260 OV9281 init\r\n\r\n");
 
+    // ─── 1. Locate AXI IIC core configuration ────────────────────────────────
     pi2c_cfg = XIic_LookupConfig(CAM_I2C_DEVID);
-    if(pi2c_cfg == NULL){
-        xil_printf("ERROR: Could not find i2c config\r\n");
+    if (pi2c_cfg == NULL) {
+        xil_printf("[FAIL] XIic_LookupConfig: no config for 0x%08X\r\n",
+                   CAM_I2C_DEVID);
         return -1;
     }
-    xil_printf("Succesfully found i2c config\r\n");
-    xil_printf("Config BaseAddress: 0x%08X\r\n", pi2c_cfg->BaseAddress);
-    xil_printf("Reading status register...\r\n");
-    u32 status_register = Xil_In32(pi2c_cfg->BaseAddress + 0x104);
-    xil_printf("Status register: 0x%x\r\n", status_register);
+    xil_printf("[PASS] IIC config found. BaseAddress: 0x%08X\r\n",
+               pi2c_cfg->BaseAddress);
 
+    // ─── 2. Initialize driver (resets HW, clears stats, stubs callbacks) ──────
+    // Note: XIic_CfgInitialize calls XIic_Reset which issues a soft-reset to
+    // the AXI IIC core and resets interrupt logic.  Do NOT call XIic_Start()
+    // here — that enables the interrupt system used only by MasterSend/Recv.
+    // The polled XIic_Send / XIic_Recv we use below manage the CR register
+    // directly and do not require the device to be "started".
     status = XIic_CfgInitialize(&i2c_instance, pi2c_cfg, pi2c_cfg->BaseAddress);
-    if(status != XST_SUCCESS){
-        xil_printf("ERROR: Unable to initialize i2c config\r\n");
-        return -1;
-    }
-    xil_printf("Succesfully init the config\r\n");
-
-    status = XIic_SelfTest(&i2c_instance);
-    if(status != XST_SUCCESS){
-        xil_printf("ERROR: i2c instance failed self test\r\n");
-        return -1;
-    }
-
-    xil_printf("[1] Scanning for TCA9546A at 0x%02X...\r\n", TCA9546_ADDR);
-    status = i2c_detect(CAM_I2C_DEVID, TCA9546_ADDR);
     if (status != XST_SUCCESS) {
-        xil_printf("[FAIL] TCA9546A not found. Check:\r\n"
+        xil_printf("[FAIL] XIic_CfgInitialize returned %d\r\n", status);
+        return -1;
+    }
+    xil_printf("[PASS] XIic_CfgInitialize OK\r\n");
+
+    // ─── 3. Self-test: verify interrupt registers are in post-reset state ──────
+    status = XIic_SelfTest(&i2c_instance);
+    if (status != XST_SUCCESS) {
+        xil_printf("[FAIL] XIic_SelfTest returned %d\r\n", status);
+        return -1;
+    }
+    xil_printf("[PASS] XIic_SelfTest OK\r\n\r\n");
+
+    // ─── 4. Enable TCA9546A port 2 and read back the control register ─────────
+    // The TCA9546A has a single 8-bit register: writing it sets which downstream
+    // ports are enabled (bit N = port N).  Reading returns the current setting.
+    xil_printf("[1] TCA9546A @ 0x%02X: enabling port 2 (0x%02X)...\r\n",
+               TCA9546_ADDR, TCA9546_PORT2_EN);
+    u8 mux_cfg = TCA9546_PORT2_EN;
+    status = i2c_write(CAM_I2C_DEVID, TCA9546_ADDR, &mux_cfg, 1);
+    if (status != XST_SUCCESS) {
+        xil_printf("[FAIL] TCA9546A write failed. Check:\r\n"
                    "       - Pull-up resistors on SCL/SDA\r\n"
                    "       - VCC to the mux\r\n"
-                   "       - A2/A1/A0 pin state vs assumed addr 0x%02X\r\n",
+                   "       - A2/A1/A0 vs assumed addr 0x%02X\r\n",
                    TCA9546_ADDR);
         return -1;
     }
-    xil_printf("[PASS] TCA9546A detected at 0x%02X\r\n\r\n", TCA9546_ADDR);
+    xil_printf("[PASS] TCA9546A write OK\r\n");
 
-    // volatile uint8_t* fb = (uint8_t*)MEM_BASE_ADDR;
-	// for(u32 i = 0; i < 1920*1080*3; i+=3){
-	// 	fb[i]   = 0x00; // Green
-	// 	fb[i+1] = 0xFF; // Blue
-	// 	fb[i+2] = 0xFF; // Red
-	// }
-    // Xil_DCacheFlush();
+    u8 mux_readback = 0xAA;
+    status = i2c_read(CAM_I2C_DEVID, TCA9546_ADDR, &mux_readback, 1);
+    if (status != XST_SUCCESS) {
+        xil_printf("[FAIL] TCA9546A read failed\r\n");
+        return -1;
+    }
+    xil_printf("[PASS] TCA9546A readback: 0x%02X (expected 0x%02X)%s\r\n\r\n",
+               mux_readback, TCA9546_PORT2_EN,
+               (mux_readback == TCA9546_PORT2_EN) ? "" : " [MISMATCH]");
 
-	// ScuGicInterruptController irpt_ctl(IRPT_CTL_DEVID);
+    // ─── 5. Read OV9281 chip ID via 16-bit register addresses ────────────────
+    // Register map uses 16-bit addresses.  Each read is a combined transfer:
+    //   START + addr+W + reg_hi + reg_lo + REPEATED_START + addr+R + byte + STOP
+    xil_printf("[2] OV9281 @ 0x%02X: reading chip ID (0x%04X, 0x%04X)...\r\n",
+               cam_address, cam_id_reg_h, cam_id_reg_l);
+    u8 chip_id_h = 0, chip_id_l = 0;
+    status = i2c_reg16_read(CAM_I2C_DEVID, cam_address, cam_id_reg_h,
+                            &chip_id_h, 1);
+    if (status != XST_SUCCESS) {
+        xil_printf("[FAIL] OV9281 not responding at 0x%02X. "
+                   "Is TCA9546A port 2 routed correctly?\r\n", cam_address);
+        return -1;
+    }
+    status = i2c_reg16_read(CAM_I2C_DEVID, cam_address, cam_id_reg_l,
+                            &chip_id_l, 1);
+    if (status != XST_SUCCESS) {
+        xil_printf("[FAIL] OV9281 chip ID low-byte read failed\r\n");
+        return -1;
+    }
+    xil_printf("[PASS] OV9281 chip ID: 0x%02X%02X (expected 0x9281)\r\n\r\n",
+               chip_id_h, chip_id_l);
 
-	// PS_GPIO<ScuGicInterruptController> gpio_driver(GPIO_DEVID, irpt_ctl, GPIO_IRPT_ID);
-	
-	// PS_IIC<ScuGicInterruptController> iic_driver(CAM_I2C_DEVID, irpt_ctl, CAM_I2C_IRPT_ID, CAM_I2C_SCLK_RATE);
-
-	// OV9281 cam(iic_driver, gpio_driver);
-
-	// AXI_VDMA<ScuGicInterruptController> vdma_driver(
-	// 	VDMA_DEVID,
-    //     MEM_BASE_ADDR,
-    //     irpt_ctl,
-    //     VDMA_MM2S_IRPT_ID,
-    //     VDMA_S2MM_IRPT_ID
-    // );
-
-
-	// pipeline_mode_change(vdma_driver, cam, vid, Resolution::R1280_720_60_PP, OV9281_cfg::mode_t::MODE_720P_1280_720_60fps);	
-	// xil_printf("Video init done.\r\n");
-
-
-	//cleanup_platform();
-    //Xil_ICacheDisable();
-    //Xil_DCacheDisable();
-    
-	return 0;
+    xil_printf("Init complete.\r\n");
+    return 0;
 }
 
 void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,

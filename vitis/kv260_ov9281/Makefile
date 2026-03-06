@@ -7,4 +7,4 @@ vitis_build:
 
 clean:
 	rm -rf workspace
-	rm -rf .wsdata
+	rm -rf .wsdata logs
