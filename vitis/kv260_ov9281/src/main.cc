@@ -96,39 +96,6 @@ static int i2c_reg16_write(UINTPTR base, u8 addr, u16 reg, u8 val)
     return (sent == 3) ? XST_SUCCESS : XST_FAILURE;
 }
 
-XUartPs uart_instance;
-XUartPs_Config * uart_config;
-
-uint8_t dGetChar(){
-    //dFlushUart();
-    /* Wait for data on UART */
-    u8 char_recv, char_old;
-    while (1){
-        XUartPs_Recv(&uart_instance, &char_recv, 1);
-        if (char_recv == '\n'){
-            break;
-        }
-        char_old = char_recv;
-    }
-    return char_old;
-}
-
-int uart_cfg(){
-    XStatus status;
-    uart_config = XUartPs_LookupConfig(UART_BASEADDR);
-    if(uart_config == NULL){
-        xil_printf("ERROR: Could not find uart config\r\n");
-        return -1;
-    }
-
-    status = XUartPs_CfgInitialize(&uart_instance, uart_config, UART_BASEADDR);
-    if(status != XST_SUCCESS){
-        xil_printf("ERROR: Could not init uart\r\n");
-        return -1;
-    }
-
-    u8 c = dGetChar();
-}
 
 void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
                           OV9281& cam,
@@ -147,7 +114,7 @@ int main() {
 
     xil_printf("KV260 OV9281 init\r\n\r\n");
 
-    // ─── 1. Locate AXI IIC core configuration ────────────────────────────────
+    // 1. Locate AXI IIC core configuration 
     pi2c_cfg = XIic_LookupConfig(CAM_I2C_DEVID);
     if (pi2c_cfg == NULL) {
         xil_printf("[FAIL] XIic_LookupConfig: no config for 0x%08X\r\n",
@@ -157,7 +124,7 @@ int main() {
     xil_printf("[PASS] IIC config found. BaseAddress: 0x%08X\r\n",
                pi2c_cfg->BaseAddress);
 
-    // ─── 2. Initialize driver (resets HW, clears stats, stubs callbacks) ──────
+    // 2. Initialize driver (resets HW, clears stats, stubs callbacks) 
     // Note: XIic_CfgInitialize calls XIic_Reset which issues a soft-reset to
     // the AXI IIC core and resets interrupt logic.  Do NOT call XIic_Start()
     // here — that enables the interrupt system used only by MasterSend/Recv.
@@ -170,7 +137,7 @@ int main() {
     }
     xil_printf("[PASS] XIic_CfgInitialize OK\r\n");
 
-    // ─── 3. Self-test: verify interrupt registers are in post-reset state ──────
+    // 3. Self-test: verify interrupt registers are in post-reset state 
     status = XIic_SelfTest(&i2c_instance);
     if (status != XST_SUCCESS) {
         xil_printf("[FAIL] XIic_SelfTest returned %d\r\n", status);
@@ -178,19 +145,14 @@ int main() {
     }
     xil_printf("[PASS] XIic_SelfTest OK\r\n\r\n");
 
-    // ─── 4. Enable TCA9546A port 2 and read back the control register ─────────
+    // 4. Enable TCA9546A port 2 and read back the control register
     // The TCA9546A has a single 8-bit register: writing it sets which downstream
     // ports are enabled (bit N = port N).  Reading returns the current setting.
-    xil_printf("[1] TCA9546A @ 0x%02X: enabling port 2 (0x%02X)...\r\n",
-               TCA9546_ADDR, TCA9546_PORT2_EN);
+    xil_printf("[1] TCA9546A @ 0x%02X: enabling port 2 (0x%02X)...\r\n", TCA9546_ADDR, TCA9546_PORT2_EN);
     u8 mux_cfg = TCA9546_PORT2_EN;
     status = i2c_write(CAM_I2C_DEVID, TCA9546_ADDR, &mux_cfg, 1);
     if (status != XST_SUCCESS) {
-        xil_printf("[FAIL] TCA9546A write failed. Check:\r\n"
-                   "       - Pull-up resistors on SCL/SDA\r\n"
-                   "       - VCC to the mux\r\n"
-                   "       - A2/A1/A0 vs assumed addr 0x%02X\r\n",
-                   TCA9546_ADDR);
+        xil_printf("[FAIL] TCA9546A write failed.\r\n");
         return -1;
     }
     xil_printf("[PASS] TCA9546A write OK\r\n");
@@ -201,31 +163,25 @@ int main() {
         xil_printf("[FAIL] TCA9546A read failed\r\n");
         return -1;
     }
-    xil_printf("[PASS] TCA9546A readback: 0x%02X (expected 0x%02X)%s\r\n\r\n",
-               mux_readback, TCA9546_PORT2_EN,
-               (mux_readback == TCA9546_PORT2_EN) ? "" : " [MISMATCH]");
+    xil_printf("[PASS] TCA9546A readback: 0x%02X (expected 0x%02X)%s\r\n\r\n", mux_readback, TCA9546_PORT2_EN,
+            (mux_readback == TCA9546_PORT2_EN) ? "" : " [MISMATCH]");
 
-    // ─── 5. Read OV9281 chip ID via 16-bit register addresses ────────────────
+    // 5. Read OV9281 chip ID via 16-bit register addresses
     // Register map uses 16-bit addresses.  Each read is a combined transfer:
     //   START + addr+W + reg_hi + reg_lo + REPEATED_START + addr+R + byte + STOP
-    xil_printf("[2] OV9281 @ 0x%02X: reading chip ID (0x%04X, 0x%04X)...\r\n",
-               cam_address, cam_id_reg_h, cam_id_reg_l);
+    xil_printf("[2] OV9281 @ 0x%02X: reading chip ID (0x%04X, 0x%04X)...\r\n", cam_address, cam_id_reg_h, cam_id_reg_l);
     u8 chip_id_h = 0, chip_id_l = 0;
-    status = i2c_reg16_read(CAM_I2C_DEVID, cam_address, cam_id_reg_h,
-                            &chip_id_h, 1);
+    status = i2c_reg16_read(CAM_I2C_DEVID, cam_address, cam_id_reg_h, &chip_id_h, 1);
     if (status != XST_SUCCESS) {
-        xil_printf("[FAIL] OV9281 not responding at 0x%02X. "
-                   "Is TCA9546A port 2 routed correctly?\r\n", cam_address);
+        xil_printf("[FAIL] OV9281 not responding at 0x%02X\r\n", cam_address);
         return -1;
     }
-    status = i2c_reg16_read(CAM_I2C_DEVID, cam_address, cam_id_reg_l,
-                            &chip_id_l, 1);
+    status = i2c_reg16_read(CAM_I2C_DEVID, cam_address, cam_id_reg_l, &chip_id_l, 1);
     if (status != XST_SUCCESS) {
         xil_printf("[FAIL] OV9281 chip ID low-byte read failed\r\n");
         return -1;
     }
-    xil_printf("[PASS] OV9281 chip ID: 0x%02X%02X (expected 0x9281)\r\n\r\n",
-               chip_id_h, chip_id_l);
+    xil_printf("[PASS] OV9281 chip ID: 0x%02X%02X (expected 0x9281)\r\n\r\n", chip_id_h, chip_id_l);
 
     xil_printf("Init complete.\r\n");
     return 0;
@@ -257,3 +213,39 @@ void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
 #endif
     vdma_driver.enableRead();
 }
+
+/*
+XUartPs uart_instance;
+XUartPs_Config * uart_config;
+
+uint8_t dGetChar(){
+    //dFlushUart();
+    // Wait for data on UART 
+    u8 char_recv, char_old;
+    while (1){
+        XUartPs_Recv(&uart_instance, &char_recv, 1);
+        if (char_recv == '\n'){
+            break;
+        }
+        char_old = char_recv;
+    }
+    return char_old;
+}
+
+int uart_cfg(){
+    XStatus status;
+    uart_config = XUartPs_LookupConfig(UART_BASEADDR);
+    if(uart_config == NULL){
+        xil_printf("ERROR: Could not find uart config\r\n");
+        return -1;
+    }
+
+    status = XUartPs_CfgInitialize(&uart_instance, uart_config, UART_BASEADDR);
+    if(status != XST_SUCCESS){
+        xil_printf("ERROR: Could not init uart\r\n");
+        return -1;
+    }
+
+    u8 c = dGetChar();
+}
+*/
