@@ -506,6 +506,12 @@ public:
             return XST_FAILURE;
         }
         xil_printf("INFO [OV9281::init()] Chip ID OK: 0x%02X%02X\r\n", id_h, id_l);
+
+		// {0x0103, 0x01}, // Software reset. 1 = camera on
+		iic_.reg16_write(dev_address_, 0x0103, 0x00);
+		for(u32 i = 0; i < 100000; i++);
+		iic_.reg16_write(dev_address_, 0x0103, 0x01);
+
         return XST_SUCCESS;
     }
 
@@ -514,28 +520,29 @@ public:
     // Returns XST_SUCCESS if all registers read back correctly.
     int apply_default_mode() {
         int ret;
+		// ret = write_reg_array(OV9281_cfg::rpi_cam_prog_seq);
         ret = write_reg_array(OV9281_cfg::ov9281_common_regs);
-        if (ret != XST_SUCCESS) return ret;
+        // if (ret != XST_SUCCESS) return ret;
         ret = write_reg_array(OV9281_cfg::ov9281_1280x720_regs);
-        if (ret != XST_SUCCESS) return ret;
+        // if (ret != XST_SUCCESS) return ret;
         ret = write_reg_array(OV9281_cfg::op_8bit);
-        if (ret != XST_SUCCESS) return ret;
+        // if (ret != XST_SUCCESS) return ret;
 
         if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
                              OV9281_MODE_STREAMING) != XST_SUCCESS) {
             xil_printf("ERROR [OV9281::apply_default_mode()] Failed to start streaming\r\n");
             return XST_FAILURE;
         }
-        xil_printf("INFO [OV9281::apply_default_mode()] Registers written, validating...\r\n");
+        // xil_printf("INFO [OV9281::apply_default_mode()] Registers written, validating...\r\n");
 
-        ret = validate_reg_array(OV9281_cfg::ov9281_common_regs);
-        // if (ret != XST_SUCCESS) return ret;
-        ret = validate_reg_array(OV9281_cfg::ov9281_1280x720_regs);
-        // if (ret != XST_SUCCESS) return ret;
-        ret = validate_reg_array(OV9281_cfg::op_8bit);
-        // if (ret != XST_SUCCESS) return ret;
+        // ret = validate_reg_array(OV9281_cfg::ov9281_common_regs);
+        // // if (ret != XST_SUCCESS) return ret;
+        // ret = validate_reg_array(OV9281_cfg::ov9281_1280x720_regs);
+        // // if (ret != XST_SUCCESS) return ret;
+        // ret = validate_reg_array(OV9281_cfg::op_8bit);
+        // // if (ret != XST_SUCCESS) return ret;
 
-        xil_printf("INFO [OV9281::apply_default_mode()] All registers validated OK\r\n");
+        // xil_printf("INFO [OV9281::apply_default_mode()] All registers validated OK\r\n");
         return XST_SUCCESS;
     }
 

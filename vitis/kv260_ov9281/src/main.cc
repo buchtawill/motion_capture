@@ -1,12 +1,9 @@
 #include "xparameters.h"
+#include "platform.h"
+#include "xcsiss.h"
 
 #include "cam/pl_iic.hpp"
-
-#include "platform.h"
 #include "cam/OV9281.h"
-// #include "cam/ScuGicInterruptController.h"
-// #include "cam/AXI_VDMA.h"
-
 #include <xil_types.h>
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
@@ -41,6 +38,37 @@ static int init_iic_routing(PL_IIC& iic) {
 
 int main() {
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
+
+    // Initialize the CSI-2 Rx Subsystem
+    XCsiSs_Config *CsiCfg;
+    XCsiSs         CsiInstance;
+
+    CsiCfg = XCsiSs_LookupConfig(XPAR_MIPI_CSI2_RX_SUBSYST_0_BASEADDR);
+    if (CsiCfg == NULL) {
+        xil_printf("ERROR [main] XCsiSs_LookupConfig failed\r\n");
+        return -1;
+    }
+    if (XCsiSs_CfgInitialize(&CsiInstance, CsiCfg, CsiCfg->BaseAddr) != XST_SUCCESS) {
+        xil_printf("ERROR [main] XCsiSs_CfgInitialize failed\r\n");
+        return -1;
+    }
+    if (XCsiSs_Reset(&CsiInstance) != XST_SUCCESS) {
+        xil_printf("ERROR [main] XCsiSs_Reset failed\r\n");
+        return -1;
+    }
+    // ActiveLanes must match the number of MIPI data lanes wired in hardware
+    if (XCsiSs_Configure(&CsiInstance, CsiCfg->LanesPresent, 0) != XST_SUCCESS) {
+        xil_printf("ERROR [main] XCsiSs_Configure failed\r\n");
+        return -1;
+    }
+    if (XCsiSs_Activate(&CsiInstance, XCSI_ENABLE) != XST_SUCCESS) {
+        xil_printf("ERROR [main] XCsiSs_Activate failed\r\n");
+        return -1;
+    }
+
+    xil_printf("INFO [main] Num lanes from config: %d\r\n", CsiCfg->LanesPresent);
+
+
 
     PL_IIC iic(CAM_I2C_DEVID);
     if (iic.init() != XST_SUCCESS) return -1;
