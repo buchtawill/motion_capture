@@ -1,3 +1,10 @@
+/**
+ * 
+ * This class is designed for the Innomaker OV9281 camera module
+ * Datasheet can be found at https://docs.rs-online.com/c69c/A700000009169905.pdf
+ * 
+ */
+
 #ifndef OV9281_H_
 #define OV9281_H_
 
@@ -16,6 +23,23 @@
 #define OV9281_REG_MODE_SELECT      0x0100
 #define OV9281_MODE_STANDBY         0x00
 #define OV9281_MODE_STREAMING       0x01
+
+// Video modes from innomaker datasheet
+// Since it is a black and white camera,
+//    Res       | bits | FPS
+// - 1280 x 800 | 10   | 120
+// - 1280 x 800 | 8    | 144
+// - 1280 x 800 | 8/10 | EXT Trig
+// ------------------------------
+// - 1280 x 720 | 10   | 120
+// - 1280 x 720 | 8    | 144  // ov9281 captures at 1280x800 and crops to 720
+// - 1280 x 720 | 8/10 | EXT Trig
+// ------------------------------
+// -  640 x 400 | 10   | 210
+// -  640 x 400 | 8    | 253
+// -  640 x 400 | 8/10 | EXT Trig
+// -  320 x 200 | 8    | 453
+
 
 struct regval {
 	u16 addr;
@@ -421,7 +445,7 @@ public:
 
 		// {0x0103, 0x01}, // Software reset. 1 = camera on
 		iic_.reg16_write(dev_address_, 0x0103, 0x00);
-		for(u32 i = 0; i < 100000; i++);
+		usleep(25000);
 		iic_.reg16_write(dev_address_, 0x0103, 0x01);
 
         return XST_SUCCESS;
@@ -433,7 +457,7 @@ public:
     int apply_default_mode() {
         int ret;
         ret = write_reg_array(OV9281_cfg::ov9281_common_regs);
-        ret = write_reg_array(OV9281_cfg::ov9281_1280x720_regs);
+        ret = write_reg_array(OV9281_cfg::ov9281_1280x800_regs);
         ret = write_reg_array(OV9281_cfg::op_8bit);
 
         if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,

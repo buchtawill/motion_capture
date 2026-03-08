@@ -110,7 +110,7 @@ print(f"INFO [create_vitis.py] Importing sources from {src_dir} to vitis project
 vitis_src_dir = os.path.join(workspace_path, APP_NAME, "src")
 
 # Clean up specific template files you want to replace/remove
-files_to_cleanup = ['Empty_applicationExample.cmake', 'CMakeLists.txt', 'UserConfig.cmake']
+files_to_cleanup = ['Empty_applicationExample.cmake', 'CMakeLists.txt', 'UserConfig.cmake', 'lscript.ld']
 
 for filename in files_to_cleanup:
     file_path = os.path.join(vitis_src_dir, filename)

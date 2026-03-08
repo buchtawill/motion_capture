@@ -2,22 +2,31 @@
 #include "platform.h"
 #include "xcsiss.h"
 
+#include "cam/AXI_VDMA.h"
 #include "cam/pl_iic.hpp"
 #include "cam/OV9281.h"
 #include <xil_types.h>
+#include <string.h>
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
 #define CAM_I2C_DEVID		XPAR_XIIC_0_BASEADDR
+#define VDMA_DEVID          XPAR_AXI_VDMA_0_BASEADDR
 
 #define TCA9546_ADDR        0x74
 #define TCA9546_PORT2_EN    0x04    // Bit 2 = enable port 2 (0b00000100)
 
+// CSI
 XCsiSs_Config *CsiCfg;
 XCsiSs         CsiInstance;
 
+#define NUM_FRAMES 1
+#define FRAME_SIZE_VERT  800
+#define FRAME_SIZE_HORZ  1280
+#define FB_SIZE_BYTES (NUM_FRAMES*FRAME_SIZE_VERT*FRAME_SIZE_HORZ)
+static uint8_t __attribute__((aligned(1024))) frame_buffer[NUM_FRAMES][FRAME_SIZE_VERT][FRAME_SIZE_HORZ];
 
-void error_handler(){
-    print("Error handler called :( \r\n");
+void error_handler(const char* err){
+    xil_printf("ERROR HANDLER: %s\r\n", err);
     while(1){}
 }
 
@@ -36,17 +45,42 @@ static int init_csi_subsystem();
 int main() {
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
 
-    if(init_csi_subsystem() != XST_SUCCESS) error_handler();
+    xil_printf("frambuffer[0] = 0x%x\r\n", frame_buffer[0][0][0]);
+    xil_printf("frambuffer[1] = 0x%x\r\n", frame_buffer[0][0][1]);
+    xil_printf("frambuffer[2] = 0x%x\r\n", frame_buffer[0][0][2]);
+    xil_printf("frambuffer[3] = 0x%x\r\n", frame_buffer[0][0][3]);
+    // Init MIPI CSI Receiver
+    if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
 
+
+    // Initialize VDMA
+    AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)frame_buffer);
+    if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
+    vdma.configureWrite(1280, 800);
+    vdma.enableWrite();
+    
+    xil_printf("INFO [kv260_ov9281_app] VDMA initialized\r\n");
+    xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
+
+    // Initialize PL i2c and route traffic to rpi connector
     PL_IIC iic(CAM_I2C_DEVID);
-    if (iic.init() != XST_SUCCESS) error_handler();
-    if (init_iic_routing(iic) != XST_SUCCESS) error_handler();
+    if (iic.init() != XST_SUCCESS) error_handler("Failed to init i2c");
+    if (init_iic_routing(iic) != XST_SUCCESS) error_handler("Failed to route i2c to mipi connector");
+    xil_printf("INFO [kv260_ov9281_app] I2C initialized and routed to camera\r\n");
 
+
+    // Instantiate and initialize camera
     OV9281 cam(iic);
-    if (cam.init() != XST_SUCCESS) error_handler();
-    if (cam.apply_default_mode() != XST_SUCCESS) error_handler();
+    if (cam.init() != XST_SUCCESS) error_handler("Failed to init ov9281");
+    if (cam.apply_default_mode() != XST_SUCCESS) error_handler("Failed to apply camera mode");
 
-    xil_printf("INFO [kv260_ov9281_app] Init complete.\r\n");
+
+    xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
+
+    xil_printf("frambuffer[0] = 0x%x\r\n", frame_buffer[0][0][0]);
+    xil_printf("frambuffer[1] = 0x%x\r\n", frame_buffer[0][0][1]);
+    xil_printf("frambuffer[2] = 0x%x\r\n", frame_buffer[0][0][2]);
+    xil_printf("frambuffer[3] = 0x%x\r\n", frame_buffer[0][0][3]);
     while(1){
 
     }
