@@ -31,82 +31,9 @@ struct ov9281_mode {
 	const struct regval *reg_list;
 };
 
-namespace digilent 
-{
-
 typedef enum {OK=0, ERR_LOGICAL, ERR_GENERAL} Errc;
 
-namespace OV9281_cfg 
-{
-	using mode_t = enum { 
-        MODE_720P_1280_720_60fps = 0, MODE_1080P_1920_1080_15fps,
-		MODE_1080P_1920_1080_30fps, MODE_1080P_1920_1080_30fps_336M_MIPI,
-		MODE_1080P_1920_1080_30fps_336M_1LANE_MIPI, MODE_END 
-    };
-	using config_modes_t = struct { mode_t mode; const struct regval* cfg; size_t cfg_size; };
-	using test_t = enum { TEST_DISABLED = 0, TEST_EIGHT_COLOR_BAR, TEST_END };
-	using awb_t = enum { AWB_DISABLED = 0, AWB_SIMPLE, AWB_ADVANCED, AWB_END };
-	using config_awb_t = struct { awb_t awb; const struct regval* cfg; size_t cfg_size; };
-	using isp_format_t = enum { ISP_RAW = 0, ISP_RGB, ISP_END };
-	uint16_t const OV9281_REG_PRE_ISP_TEST_SET1 = 0x503D;
-	uint16_t const OV9281_FORMAT_MUX_CONTROL = 0x501f;
-	
-	static const struct regval cfg_advanced_awb_[] = {
-		// Enable Advanced AWB
-		{0x3406 ,0x00},
-		{0x5192 ,0x04},
-		{0x5191 ,0xf8},
-		{0x518d ,0x26},
-		{0x518f ,0x42},
-		{0x518e ,0x2b},
-		{0x5190 ,0x42},
-		{0x518b ,0xd0},
-		{0x518c ,0xbd},
-		{0x5187 ,0x18},
-		{0x5188 ,0x18},
-		{0x5189 ,0x56},
-		{0x518a ,0x5c},
-		{0x5186 ,0x1c},
-		{0x5181 ,0x50},
-		{0x5184 ,0x20},
-		{0x5182 ,0x11},
-		{0x5183 ,0x00},
-		{0x5001 ,0x03}
-	};
-
-	static const struct regval cfg_simple_awb_[] = {
-		// Disable Advanced AWB
-		{0x518d ,0x00},
-		{0x518f ,0x20},
-		{0x518e ,0x00},
-		{0x5190 ,0x20},
-		{0x518b ,0x00},
-		{0x518c ,0x00},
-		{0x5187 ,0x10},
-		{0x5188 ,0x10},
-		{0x5189 ,0x40},
-		{0x518a ,0x40},
-		{0x5186 ,0x10},
-		{0x5181 ,0x58},
-		{0x5184 ,0x25},
-		{0x5182 ,0x11},
-
-		// Enable simple AWB
-		{0x3406 ,0x00},
-		{0x5183 ,0x80},
-		{0x5191 ,0xff},
-		{0x5192 ,0x00},
-		{0x5001 ,0x03}
-	};
-
-	static const struct regval cfg_disable_awb_[] = {
-		{0x5001 ,0x02}
-	};
-	
-	static const struct regval cfg_init_[] = {
-
-	};
-
+namespace OV9281_cfg {
 	static const struct regval rpi_cam_prog_seq[] = {
 		{0x4800, 0x20},
 		{0x0302, 0x32},
@@ -466,21 +393,6 @@ namespace OV9281_cfg
 			.reg_list = ov9281_640x400_regs,
 		},
 	};
-	
-	// config_modes_t const modes[] =
-	// {
-    //     { MAP_ENUM_TO_CFG(MODE_720P_1280_720_60fps, cfg_720p_60fps_) },
-    //     { MAP_ENUM_TO_CFG(MODE_1080P_1920_1080_15fps, cfg_1080p_15fps_) },
-    //     { MAP_ENUM_TO_CFG(MODE_1080P_1920_1080_30fps, cfg_1080p_30fps_), },
-    //     { MAP_ENUM_TO_CFG(MODE_1080P_1920_1080_30fps_336M_MIPI, cfg_1080p_30fps_336M_mipi_) },
-    //     { MAP_ENUM_TO_CFG(MODE_1080P_1920_1080_30fps_336M_1LANE_MIPI, cfg_1080p_30fps_336M_1lane_mipi_) },
-	// };
-	// config_awb_t const awbs[] =
-	// {
-    //     { MAP_ENUM_TO_CFG(AWB_DISABLED, cfg_disable_awb_) },
-    //     { MAP_ENUM_TO_CFG(AWB_SIMPLE, cfg_simple_awb_) },
-    //     { MAP_ENUM_TO_CFG(AWB_ADVANCED, cfg_advanced_awb_) }
-	// };
 }
 
 class OV9281 {
@@ -520,29 +432,15 @@ public:
     // Returns XST_SUCCESS if all registers read back correctly.
     int apply_default_mode() {
         int ret;
-		// ret = write_reg_array(OV9281_cfg::rpi_cam_prog_seq);
         ret = write_reg_array(OV9281_cfg::ov9281_common_regs);
-        // if (ret != XST_SUCCESS) return ret;
         ret = write_reg_array(OV9281_cfg::ov9281_1280x720_regs);
-        // if (ret != XST_SUCCESS) return ret;
         ret = write_reg_array(OV9281_cfg::op_8bit);
-        // if (ret != XST_SUCCESS) return ret;
 
         if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
                              OV9281_MODE_STREAMING) != XST_SUCCESS) {
             xil_printf("ERROR [OV9281::apply_default_mode()] Failed to start streaming\r\n");
             return XST_FAILURE;
         }
-        // xil_printf("INFO [OV9281::apply_default_mode()] Registers written, validating...\r\n");
-
-        // ret = validate_reg_array(OV9281_cfg::ov9281_common_regs);
-        // // if (ret != XST_SUCCESS) return ret;
-        // ret = validate_reg_array(OV9281_cfg::ov9281_1280x720_regs);
-        // // if (ret != XST_SUCCESS) return ret;
-        // ret = validate_reg_array(OV9281_cfg::op_8bit);
-        // // if (ret != XST_SUCCESS) return ret;
-
-        // xil_printf("INFO [OV9281::apply_default_mode()] All registers validated OK\r\n");
         return XST_SUCCESS;
     }
 
@@ -583,7 +481,5 @@ private:
     static constexpr u16  reg_ID_h_      = 0x300A;
     static constexpr u16  reg_ID_l_      = 0x300B;
 };
-
-} /* namespace digilent */
 
 #endif /* OV9281_H_ */
