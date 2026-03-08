@@ -18,7 +18,7 @@ kv260_ov9281_proj:
 
 proj: clean kv260_ov9281_proj
 
-build: kv260_ov9281_proj
+bitstream: kv260_ov9281_proj
 	vivado -mode batch -source export_bitstream.tcl
 
 .PHONY: all clean project build
