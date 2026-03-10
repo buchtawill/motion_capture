@@ -221,7 +221,7 @@ public:
         initMemAxiVdma(h_res, v_res);
 		
         // Set again h/v attr
-        context_.WriteCfg.HoriSizeInput = h_res * drv_inst_.WriteChannel.StreamWidth;
+        context_.WriteCfg.HoriSizeInput = h_res * bytes_pp;  // bytes per line (pixels * bytes/pixel)
         context_.WriteCfg.VertSizeInput = v_res;
         context_.WriteCfg.Stride = context_.WriteCfg.HoriSizeInput;
 		context_.WriteCfg.FrameDelay = 1;
@@ -265,6 +265,7 @@ public:
 
 		//Enable write channel error and frame count interrupts
 		// XAxiVdma_IntrEnable(&drv_inst_, XAXIVDMA_IXR_ERROR_MASK, XAXIVDMA_WRITE);
+		return XST_SUCCESS;
 	}
 
 	XStatus enableWrite() {
@@ -295,16 +296,17 @@ public:
 		int iFrm = 0;
 		h_res_pix = hRes;
 		v_res_pix = vRes;
+		UINTPTR tmp_addr = frame_buf_base_addr_;
 
 		//context_.ReadCfg.HoriSizeInput = prevHVSize.hRes * drv_inst_.ReadChannel.StreamWidth;
 		//context_.ReadCfg.VertSizeInput = prevHVSize.vRes;
 		for (iFrm = 0; iFrm < drv_inst_.MaxNumFrames; iFrm++){
-			size_t dimFrame = (hRes * drv_inst_.ReadChannel.StreamWidth) * vRes;
+			size_t dimFrame = (hRes * bytes_pp) * vRes;  // bytes per frame (pixels * bytes/pixel * lines)
 
 			// context_.ReadCfg.FrameStoreStartAddr[iFrm] = frame_buf_base_addr_;
-			context_.WriteCfg.FrameStoreStartAddr[iFrm] = frame_buf_base_addr_;
-			xil_printf("VDMA Frame %d Addr: 0x%08x\r\n", iFrm, frame_buf_base_addr_);
-			frame_buf_base_addr_ += dimFrame;
+			context_.WriteCfg.FrameStoreStartAddr[iFrm] = tmp_addr;
+			xil_printf("VDMA Frame %d Addr: 0x%08x\r\n", iFrm, tmp_addr);
+			tmp_addr += dimFrame;
 		}
     }
     

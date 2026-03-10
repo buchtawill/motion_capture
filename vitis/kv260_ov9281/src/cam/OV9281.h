@@ -460,6 +460,9 @@ public:
         ret = write_reg_array(OV9281_cfg::ov9281_1280x800_regs);
         ret = write_reg_array(OV9281_cfg::op_8bit);
 
+		// enable test pattern
+		// iic_.reg16_write(dev_address_, 0x5e00, 0x80);
+
         if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
                              OV9281_MODE_STREAMING) != XST_SUCCESS) {
             xil_printf("ERROR [OV9281::apply_default_mode()] Failed to start streaming\r\n");

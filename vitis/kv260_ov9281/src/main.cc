@@ -1,12 +1,12 @@
 #include "xparameters.h"
 #include "platform.h"
 #include "xcsiss.h"
+#include <xil_types.h>
+#include "xil_cache.h"
 
 #include "cam/AXI_VDMA.h"
 #include "cam/pl_iic.hpp"
 #include "cam/OV9281.h"
-#include <xil_types.h>
-#include <string.h>
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
 #define CAM_I2C_DEVID		XPAR_XIIC_0_BASEADDR
@@ -45,20 +45,15 @@ static int init_csi_subsystem();
 int main() {
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
 
-    xil_printf("frambuffer[0] = 0x%x\r\n", frame_buffer[0][0][0]);
-    xil_printf("frambuffer[1] = 0x%x\r\n", frame_buffer[0][0][1]);
-    xil_printf("frambuffer[2] = 0x%x\r\n", frame_buffer[0][0][2]);
-    xil_printf("frambuffer[3] = 0x%x\r\n", frame_buffer[0][0][3]);
     // Init MIPI CSI Receiver
     if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
-
 
     // Initialize VDMA
     AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)frame_buffer);
     if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
     vdma.configureWrite(1280, 800);
     vdma.enableWrite();
-    
+
     xil_printf("INFO [kv260_ov9281_app] VDMA initialized\r\n");
     xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
 
@@ -77,10 +72,8 @@ int main() {
 
     xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
 
-    xil_printf("frambuffer[0] = 0x%x\r\n", frame_buffer[0][0][0]);
-    xil_printf("frambuffer[1] = 0x%x\r\n", frame_buffer[0][0][1]);
-    xil_printf("frambuffer[2] = 0x%x\r\n", frame_buffer[0][0][2]);
-    xil_printf("frambuffer[3] = 0x%x\r\n", frame_buffer[0][0][3]);
+    // Xil_DCacheInvalidateRange((UINTPTR)frame_buffer, INTPTR(FB_SIZE_BYTES));
+    // Xil_DCacheDisable();  // disables + flushes first
     while(1){
 
     }
