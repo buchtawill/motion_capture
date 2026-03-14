@@ -1,10 +1,13 @@
 #!/home/will/Desktop/motion_capture/mocap_env/bin/python3
 
+import os
 import sys
 import numpy as np
-from PIL import Image
+import matplotlib.pyplot as plt
 
 image_path = "/home/will/Desktop/motion_capture/vitis/kv260_ov9281/mem_dump.bin"
+
+os.system('cd ../vitis/kv260_ov9281 && make dump_image')
 
 WIDTH  = 1280
 HEIGHT = 800
@@ -17,4 +20,6 @@ with open(image_path, 'rb') as f:
     data = f.read(WIDTH * HEIGHT)
 
 frame = np.frombuffer(data, dtype=np.uint8).reshape((HEIGHT, WIDTH))
-Image.fromarray(frame, mode='L').show()
+plt.imshow(frame, cmap='gray', vmin=0, vmax=255)
+plt.axis('off')
+plt.show()
