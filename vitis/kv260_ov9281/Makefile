@@ -1,14 +1,16 @@
 
 app_and_boot:
-	vitis -s build_app_only.py
-	xsdb program_and_boot.tcl
+	vitis -s s scripts/build_app_only.py
+	xsdb scripts/program_and_boot.tcl
 
 
-boot: clean vitis_build
-	xsdb program_and_boot.tcl
+boot: build_all
+	xsdb scripts/program_and_boot.tcl
 
-vitis_build:
-	vitis -s create_vitis.py
+build_all:
+	vitis -s scripts/create_vitis.py
+
+mem_dump:
 
 clean:
 	rm -rf workspace

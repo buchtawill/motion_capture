@@ -11,7 +11,7 @@ import json
 import signal
 
 def die_with_error(message):
-    print(f"ERROR [build_app_only.py] {message}")
+    print(f"ERROR [create_vitis.py] {message}")
     try:
         vitis.dispose() # type: ignore
     except Exception as e:
@@ -19,7 +19,7 @@ def die_with_error(message):
     sys.exit(1)
 
 def signal_handler(sig, frame):
-    print("\nINFO [build_app_only.py] Caught Ctrl+C, disposing vitis...")
+    print("\nINFO [create_vitis.py] Caught Ctrl+C, disposing vitis...")
     try:
         vitis.dispose() # type: ignore
     except Exception as e:
@@ -42,25 +42,48 @@ APP_NAME = f'{PROJECT_NAME}_app'
 # 1. Setup Paths
 # -----------------------------------------------------------------------------------
 script_dir = os.path.dirname(os.path.abspath(__file__))
-src_dir = os.path.join(script_dir, "src")
-xsa_path = os.path.abspath(os.path.join(script_dir, f"../../vivado/{PROJECT_NAME}/{PROJECT_NAME}_proj/{PROJECT_NAME}_proj.xsa"))
-workspace_path = os.path.join(script_dir, "workspace")
+src_dir = os.path.join(script_dir, "../src")
+xsa_path = os.path.abspath(os.path.join(script_dir, f"../../../vivado/{PROJECT_NAME}/{PROJECT_NAME}_proj/{PROJECT_NAME}_proj.xsa"))
+workspace_path = os.path.join(script_dir, "../workspace")
 
 # -----------------------------------------------------------------------------------
-# Clean existing application
+# Clean existing workspace path
 # -----------------------------------------------------------------------------------
-app_path = f"{workspace_path}/{APP_NAME}"
-if os.path.exists(app_path):
-    print(f"INFO [build_app_only.py] Cleaning old application at {app_path}...")
-    shutil.rmtree(app_path)
+if os.path.exists(workspace_path):
+    print(f"INFO [create_vitis.py] Cleaning old workspace at {workspace_path}...")
+    shutil.rmtree(workspace_path)
+    os.makedirs(workspace_path)
+
+if(not os.path.exists(xsa_path)):
+    print(f"ERROR [create_vitis.py] No hardware XSA file at {xsa_path}")
+    die_with_error("XSA file not found")
 
 # -----------------------------------------------------------------------------------
 # 2. Initialize Vitis Client
 # -----------------------------------------------------------------------------------
-print("INFO [build_app_only.py] Creating vitis client")
+print("INFO [create_vitis.py] Creating vitis client")
 client = vitis.create_client() # type: ignore
 client.set_workspace(path=workspace_path)
 
+# -----------------------------------------------------------------------------------
+# 3. Create Platform Component
+# -----------------------------------------------------------------------------------
+print(f"INFO [create_vitis.py] Creating Platform from {xsa_path}")
+platform_comp = client.create_platform_component(
+    name=f'{PROJECT_NAME}_platform',
+    hw_design=xsa_path,
+    cpu='psu_cortexa53_0',
+    os='standalone',
+    domain_name='standalone_psu_cortexa53_0'
+)
+
+print("INFO [create_vitis.py] Building Platform")
+platform_comp.build()
+
+# Enable lwip in the application domain
+# domain = platform.get_domain(name="standalone_psu_cortexa53_0")
+# status = domain.set_lib(lib_name="lwip220", path="/tools/Xilinx/Vitis/2024.1/data/embeddedsw/ThirdParty/sw_services/lwip220_v1_0")
+# status = platform.build()
 
 # -----------------------------------------------------------------------------------
 # 4. Create Application Component
@@ -71,22 +94,23 @@ if not os.path.exists(platform_xpfm):
     print(f"ERROR: Platform XPFM file was not generated at: {platform_xpfm}")
     die_with_error("Platform XPFM file not generated")
     
-print("INFO [build_app_only.py] Creating Application")
+print("INFO [create_vitis.py] Creating Application")
 app_comp = client.create_app_component(
     name=APP_NAME,
     platform=platform_xpfm,
     domain='standalone_psu_cortexa53_0',
     template='empty_application'
+    # template='hello_world'
 )
 
 # -----------------------------------------------------------------------------------
 # 5. Import Sources
 # -----------------------------------------------------------------------------------
-print(f"INFO [build_app_only.py] Importing sources from {src_dir} to vitis project")
+print(f"INFO [create_vitis.py] Importing sources from {src_dir} to vitis project")
 vitis_src_dir = os.path.join(workspace_path, APP_NAME, "src")
 
 # Clean up specific template files you want to replace/remove
-files_to_cleanup = ['Empty_applicationExample.cmake', 'CMakeLists.txt', 'UserConfig.cmake']
+files_to_cleanup = ['Empty_applicationExample.cmake', 'CMakeLists.txt', 'UserConfig.cmake', 'lscript.ld']
 
 for filename in files_to_cleanup:
     file_path = os.path.join(vitis_src_dir, filename)
@@ -99,19 +123,19 @@ if os.path.exists(src_dir):
     shutil.copytree(src_dir, vitis_src_dir, dirs_exist_ok=True)
     print(f"   - Successfully merged sources from {src_dir}")
 else:
-    print(f"ERROR [build_app_only.py] Source directory {src_dir} not found!")
+    print(f"ERROR [create_vitis.py] Source directory {src_dir} not found!")
     die_with_error("Source directory not found")
 
 # -----------------------------------------------------------------------------------
 # 6. Build
 # -----------------------------------------------------------------------------------
-print(f"INFO [build_app_only.py] Building application")
+print(f"INFO [create_vitis.py] Building application")
 result = app_comp.build()
 
 if(result != 0):
-    print("ERROR [build_app_only.py] Application build failed")
+    print("ERROR [create_vitis.py] Application build failed")
     die_with_error("Application build failed")
-print(f"INFO [build_app_only.py] Application build successful")
+print(f"INFO [create_vitis.py] Application build successful")
 
 
 vitis.dispose() # type: ignore

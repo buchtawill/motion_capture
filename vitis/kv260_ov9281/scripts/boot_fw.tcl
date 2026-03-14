@@ -1,5 +1,7 @@
+# Run application elf on core
+
 set vitis_workspace_dir [file dirname [info script]]
-set vitis_workspace_dir "$vitis_workspace_dir/workspace"
+set vitis_workspace_dir "$vitis_workspace_dir/../workspace"
 
 set project_name  "kv260_ov9281"
 set platform_name $project_name\_platform
