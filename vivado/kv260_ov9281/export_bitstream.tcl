@@ -9,7 +9,7 @@ set project_dir "./$project_name"
 set bitstream_dir "./bitstreams"
 
 # Lower for RAM constrained machines
-set max_jobs 4 
+set max_jobs 8
 
 open_project "$project_dir/$project_name.xpr"
 
