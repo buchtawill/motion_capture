@@ -4,6 +4,7 @@
 # Run with the following command: vivado -mode batch -source example_script.tcl
 # Author: Will Buchta Dec 2024
 
+set jobs 10
 set project_name "zybo_ov9281_proj"
 set project_dir "./$project_name"
 set bitstream_dir "./bitstreams"
@@ -29,14 +30,14 @@ update_compile_order -fileset sources_1
 
 # Run synthesis
 reset_run synth_1
-launch_runs synth_1 -jobs 6
+launch_runs synth_1 -jobs $jobs
 if {[catch {wait_on_run synth_1} result]} {
     puts "Error during synthesis: $result"
     exit 1
 }
 
 reset_run impl_1
-launch_runs impl_1 -to_step write_bitstream -jobs 6
+launch_runs impl_1 -to_step write_bitstream -jobs $jobs
 if {[catch {wait_on_run impl_1} result]} {
     puts "Error during implementation: $result"
     exit 1
