@@ -45,6 +45,8 @@ app_path = f"{workspace_path}/{APP_NAME}"
 if os.path.exists(app_path):
     print(f"INFO [build_app_only.py] Cleaning old application at {app_path}...")
     shutil.rmtree(app_path)
+else:
+    print(f"WARNING [build_app_only.py] No existing application found at {app_path}, skipping cleanup.")
 
 # -----------------------------------------------------------------------------------
 # 2. Initialize Vitis Client

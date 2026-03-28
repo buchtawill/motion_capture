@@ -17,6 +17,13 @@ puts "INFO \[boot_fpga.tcl\] Programming PL with bitstream: $bitstream_path"
 targets -set -filter {name =~ "xc7z020"}
 fpga -file $bitstream_path
 
+# Zynq fsbl
+puts "INFO \[boot_fpga.tcl\] Downloading zynq fsbl and waiting 5 seconds"
+dow "$workspace_dir/$platform_name/zynq_fsbl/build/fsbl.elf"
+con
+after 5000
+stop
+
 puts "INFO \[boot_fpga.tcl\] Selecting Cortex-A9 Core 0 and initializing PS"
 targets -set -filter {name =~ "ARM Cortex-A9 MPCore #0"}
 rst -processor -clear-registers

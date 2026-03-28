@@ -8,7 +8,7 @@ set platform_name ${project_name}_platform
 set app_name      ${project_name}_app
 
 set workspace_dir  [file normalize "$script_dir/../workspace"]
-set bitstream_path [file normalize "$script_dir/../../../vivado/$project_name/${project_name}_proj/${project_name}_proj.bit"]
+set bitstream_path [file normalize "$workspace_dir/$platform_name/hw/sdt/zybo_ov9281_proj.bit"]
 set ps7_init_path  [file normalize "$workspace_dir/$app_name/_ide/psinit/ps7_init.tcl"]
 set elf_path       [file normalize "$workspace_dir/$app_name/build/$app_name.elf"]
 
@@ -22,6 +22,13 @@ fpga -file $bitstream_path
 puts "INFO \[program_and_boot.tcl\] Selecting Cortex-A9 Core 0"
 targets -set -filter {name =~ "ARM Cortex-A9 MPCore #0"}
 rst -processor -clear-registers
+
+# Zynq fsbl
+puts "INFO \[program_and_boot.tcl\] Downloading zynq fsbl and waiting 5 seconds"
+dow "$workspace_dir/$platform_name/zynq_fsbl/build/fsbl.elf"
+con
+after 5000
+stop
 
 puts "INFO \[program_and_boot.tcl\] Running ps7_init"
 source $ps7_init_path

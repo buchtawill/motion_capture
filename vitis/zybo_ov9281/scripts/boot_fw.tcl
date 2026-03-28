@@ -17,6 +17,13 @@ puts "INFO \[boot_fw.tcl\] Selecting Cortex-A9 Core 0"
 targets -set -filter {name =~ "ARM Cortex-A9 MPCore #0"}
 rst -processor -clear-registers
 
+# Zynq fsbl
+puts "INFO \[boot_fw.tcl\] Downloading zynq fsbl and waiting 5 seconds"
+dow "$workspace_dir/$platform_name/zynq_fsbl/build/fsbl.elf"
+con
+after 5000
+stop
+
 puts "INFO \[boot_fw.tcl\] Running ps7_init"
 source $ps7_init_path
 ps7_init
