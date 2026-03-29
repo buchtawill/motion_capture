@@ -1,34 +1,41 @@
 #include "xparameters.h"
-//#include "xparameters_ps.h" // for INTRs
+#include "xuartps.h"
+#include "xcsiss.h"
+#include <cstdint>
+#include <xil_cache.h>
+#include <xil_io.h>
+#include <xil_types.h>
+//#include "xparameters_ps.h" // for INTRs --> digilent comment, IDK (wbuchta)
 
 #include "platform.h"
+
 #include "cam/OV9281.h"
 #include "cam/ScuGicInterruptController.h"
 #include "cam/PS_GPIO.h"
 #include "cam/AXI_VDMA.h"
 #include "cam/PS_IIC.h"
+#include "hdmi/VideoOutput.h"
 
-// #include "MIPI_D_PHY_RX.h"
-// #include "MIPI_CSI_2_RX.h"
-#include "xuartps.h"
-
-#include <cstdint>
-#include <xil_cache.h>
-#include <xil_io.h>
-#include <xil_types.h>
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
 #define GPIO_DEVID			XPAR_GPIO0_BASEADDR
 #define GPIO_IRPT_ID		XPAR_PS7_GPIO_0_INTR
-#define CAM_I2C_DEVID		XPAR_I2C0_BASEADDR
+#define IIC_DEV_BASEADDR    XPAR_I2C0_BASEADDR
 #define CAM_I2C_IRPT_ID		XPAR_PS7_I2C_0_INTR
 #define VDMA_DEVID			XPAR_AXI_VDMA_0_BASEADDR
 #define VDMA_MM2S_IRPT_ID	XPAR_FABRIC_AXI_VDMA_0_INTR
 #define VDMA_S2MM_IRPT_ID	XPAR_FABRIC_AXI_VDMA_0_INTR_1
 #define CAM_I2C_SCLK_RATE	100000
 
-#define DDR_BASE_ADDR		XPAR_DDR_MEM_BASEADDR
-#define MEM_BASE_ADDR		(DDR_BASE_ADDR + 0x0A000000)
+// CSI
+XCsiSs_Config *CsiCfg;
+XCsiSs         CsiInstance;
+
+#define NUM_FRAMES 1
+#define FRAME_SIZE_VERT  800
+#define FRAME_SIZE_HORZ  1280
+#define FB_SIZE_BYTES (NUM_FRAMES*FRAME_SIZE_VERT*FRAME_SIZE_HORZ)
+static volatile uint8_t __attribute__((aligned(1024))) _frame_buffer[NUM_FRAMES][FRAME_SIZE_VERT][FRAME_SIZE_HORZ];
 
 // #define GAMMA_BASE_ADDR     XPAR_AXI_GAMMACORRECTION_0_BASEADDR
 
@@ -39,6 +46,11 @@ using namespace digilent;
 
 void dFlushUart();
 uint8_t dGetChar();
+
+void error_handler(const char* err){
+    xil_printf("ERROR HANDLER: %s\r\n", err);
+    while(1){}
+}
 // void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,
 //                           OV9281& cam,
 //                           VideoOutput& vid,
@@ -46,366 +58,57 @@ uint8_t dGetChar();
 //                           OV9281_cfg::mode_t mode
 //                           );
 
+/**
+ * Initializes and enables the CSI2RX 
+ */
+static int init_csi_subsystem();
+
 int main()
 {
 	// init_platform();
     // Xil_ICacheEnable();
     // Xil_DCacheEnable();
-	xil_printf("Starting cam ping test\r\n");
-	xil_printf("Yes it's still able to boot and print!\r\n");
 
+    if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
 
-    // volatile uint8_t* fb = (uint8_t*)MEM_BASE_ADDR;
-	// for(u32 i = 0; i < 1920*1080*3; i+=3){
-	// 	fb[i]   = 0x00; // Green
-	// 	fb[i+1] = 0xFF; // Blue
-	// 	fb[i+2] = 0xFF; // Red
-	// }
-    // Xil_DCacheFlush();
+	for(u32 i = 0; i < FRAME_SIZE_VERT; i++){
+		for(u32 j = 0; j < FRAME_SIZE_HORZ; j++){
+			_frame_buffer[0][i][j] = 0x80; //gray
+		}
+	}
+	xil_printf("INFO [zybo_ov9281_app] Frame buffer initialized.\r\n");
 
-	// ScuGicInterruptController irpt_ctl(IRPT_CTL_DEVID);
-
-	// PS_GPIO<ScuGicInterruptController> gpio_driver(GPIO_DEVID, irpt_ctl, GPIO_IRPT_ID);
+	ScuGicInterruptController irpt_ctl(IRPT_CTL_DEVID);
 	
-	// PS_IIC<ScuGicInterruptController> iic_driver(CAM_I2C_DEVID, irpt_ctl, CAM_I2C_IRPT_ID, CAM_I2C_SCLK_RATE);
+	PS_IIC iic(IIC_DEV_BASEADDR, CAM_I2C_SCLK_RATE);
+    if (iic.init() != XST_SUCCESS) error_handler("Failed to init i2c");
+    xil_printf("INFO [zybo_ov9281_app] I2C initialized and routed to camera\r\n");
 
-	// OV9281 cam(iic_driver, gpio_driver);
+	// Initialize VDMA
+    AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)_frame_buffer);
+    if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
+    if (vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure VDMA write");
+    if (vdma.enableWrite() != XST_SUCCESS) error_handler("Failed to enable VDMA write");
 
-	// AXI_VDMA<ScuGicInterruptController> vdma_driver(
-	// 	VDMA_DEVID,
-    //     MEM_BASE_ADDR,
-    //     irpt_ctl,
-    //     VDMA_MM2S_IRPT_ID,
-    //     VDMA_S2MM_IRPT_ID
-    // );
+    if (vdma.configureRead(1280, 720) != XST_SUCCESS) error_handler("Failed to configure VDMA read");
+    if (vdma.enableRead() != XST_SUCCESS) error_handler("Failed to enable VDMA read");
 
-	// VideoOutput vid(XPAR_VTG_BASEADDR, XPAR_VIDEO_DYNCLK_BASEADDR);
+
+    // Instantiate and initialize camera
+    OV9281 cam(iic);
+    if (cam.init() != XST_SUCCESS) error_handler("Failed to init ov9281");
+    if (cam.apply_default_mode() != XST_SUCCESS) error_handler("Failed to apply camera mode");
+
+	VideoOutput vid(XPAR_VTG_BASEADDR, XPAR_VIDEO_DYNCLK_BASEADDR);
+	if (vid.init() != XST_SUCCESS) error_handler("Failed to init VideoOutput");
 
 	// pipeline_mode_change(vdma_driver, cam, vid, Resolution::R1280_720_60_PP, OV9281_cfg::mode_t::MODE_720P_1280_720_60fps);
+    vid.reset();
+    vid.configure(Resolution::R1280_720_60_PP);
+    vid.enable();
 	
-	// xil_printf("Video init done.\r\n");
+	xil_printf("Video init done.\r\n");
 
-	// // Liquid lens control
-	// uint8_t read_char0 = 0;
-	// uint8_t read_char1 = 0;
-	// uint8_t read_char2 = 0;
-	// uint8_t read_char4 = 0;
-	// uint8_t read_char5 = 0;
-	// uint16_t reg_addr;
-	// uint8_t reg_value;
-
-	// while (1)
-    // {
-	// 	xil_printf("\r\n\r\n\r\nPcam 5C MAIN OPTIONS\r\n");
-	// 	xil_printf("\r\nPlease press the key corresponding to the desired option:");
-	// 	xil_printf("\r\n  a. Change Resolution");
-	// 	// xil_printf("\r\n  b. Change Liquid Lens Focus");
-	// 	xil_printf("\r\n  d. Change Image Format (Raw or RGB)");
-	// 	xil_printf("\r\n  e. Write a Register Inside the Image Sensor");
-	// 	xil_printf("\r\n  f. Read a Register Inside the Image Sensor");
-	// 	xil_printf("\r\n  g. Change Gamma Correction Factor Value");
-	// 	xil_printf("\r\n  h. Change AWB Settings\r\n\r\n");
-
-	// 	read_char0 = getchar(); getchar();
-	// 	xil_printf("Read: %d\r\n", read_char0);
-
-	// 	switch (read_char0) 
-    //     {
-	// 	case 'a':
-	// 		xil_printf("\r\n  Please press the key corresponding to the desired resolution:");
-	// 		xil_printf("\r\n    1. 1280 x 720, 60fps");
-	// 		xil_printf("\r\n    2. 1920 x 1080, 15fps");
-	// 		xil_printf("\r\n    3. 1920 x 1080, 30fps");
-
-	// 		read_char1 = getchar();  getchar();
-	// 		xil_printf("\r\nRead: %d", read_char1);
-
-	// 		switch (read_char1) 
-    //         {
-	// 		case '1':
-	// 			pipeline_mode_change(
-    //                 vdma_driver,
-    //                 cam,
-    //                 vid,
-    //                 Resolution::R1280_720_60_PP,
-    //                 OV9281_cfg::mode_t::MODE_720P_1280_720_60fps
-    //             );
-	// 			xil_printf("Resolution change done.\r\n");
-	// 			break;
-	// 		case '2':
-	// 			pipeline_mode_change(
-    //                 vdma_driver,
-    //                 cam,
-    //                 vid,
-    //                 Resolution::R1920_1080_60_PP,
-    //                 OV9281_cfg::mode_t::MODE_1080P_1920_1080_15fps
-    //             );
-	// 			xil_printf("Resolution change done.\r\n");
-	// 			break;
-	// 		case '3':
-	// 			pipeline_mode_change(
-    //                 vdma_driver,
-    //                 cam,
-    //                 vid,
-    //                 Resolution::R1920_1080_60_PP,
-    //                 OV9281_cfg::mode_t::MODE_1080P_1920_1080_30fps
-    //             );
-	// 			xil_printf("Resolution change done.\r\n");
-	// 			break;
-	// 		default:
-	// 			xil_printf("\r\n  Selection is outside the available options! Please retry...");
-	// 		}
-	// 		break;
-
-	// 	// case 'b':
-	// 	// 	xil_printf("\r\n\r\nPlease enter value of liquid lens register, in hex, with small letters (2 nibbles): 0x");
-	// 	// 	//A, B, C,..., F need to be entered with small letters
-	// 	// 	while (read_char1 < 48) {
-	// 	// 		read_char1 = getchar();
-	// 	// 	}
-	// 	// 	while (read_char2 < 48) {
-	// 	// 		read_char2 = getchar(); getchar();
-	// 	// 	}
-	// 	// 	// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 	// 	if (read_char1 <= 57) {
-	// 	// 		read_char1 -= 48;
-	// 	// 	}
-	// 	// 	// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 	// 	else {
-	// 	// 		read_char1 -= 87;
-	// 	// 	}
-	// 	// 	// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 	// 	if (read_char2 <= 57) {
-	// 	// 		read_char2 -= 48;
-	// 	// 	}
-	// 	// 	// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 	// 	else {
-	// 	// 		read_char2 -= 87;
-	// 	// 	}
-	// 	// 	cam.writeRegLiquid((uint8_t) (16*read_char1 + read_char2));
-	// 	// 	xil_printf("\r\nWrote to liquid lens controller: %x", (uint8_t) (16*read_char1 + read_char2));
-	// 	// 	break;
-
-	// 	case 'd':
-	// 		xil_printf("\r\n  Please press the key corresponding to the desired setting:");
-	// 		xil_printf("\r\n    1. Select image format to be RGB, output still Raw");
-	// 		xil_printf("\r\n    2. Select image format & output to both be Raw");
-			
-    //         read_char1 = getchar(); getchar();
-	// 		xil_printf("\r\nRead: %d", read_char1);
-			
-    //         switch (read_char1) 
-    //         {
-	// 		case '1':
-	// 		// 	cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RGB);
-	// 		// 	xil_printf("Settings change done.\r\n");
-	// 		// 	break;
-	// 		// case '2':
-	// 		// 	cam.set_isp_format(OV9281_cfg::isp_format_t::ISP_RAW);
-	// 		// 	xil_printf("Settings change done.\r\n");
-	// 		// 	break;
-	// 		default:
-	// 			xil_printf("\r\n  Selection is outside the available options! Please retry...");
-	// 		}
-	// 		break;
-
-	// 	case 'e':
-	// 		xil_printf("\r\nPlease enter address of image sensor register, in hex, with small letters (4 nibbles): \r\n");
-	// 		//A, B, C,..., F need to be entered with small letters
-	// 		while (read_char1 < 48) {
-	// 			read_char1 = getchar();
-	// 		}
-	// 		while (read_char2 < 48) {
-	// 			read_char2 = getchar();
-	// 		}
-	// 		while (read_char4 < 48) {
-	// 			read_char4 = getchar();
-	// 		}
-	// 		while (read_char5 < 48) {
-	// 			read_char5 = getchar(); getchar();
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char1 <= 57) {
-	// 			read_char1 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char1 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char2 <= 57) {
-	// 			read_char2 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char2 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char4 <= 57) {
-	// 			read_char4 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char4 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char5 <= 57) {
-	// 			read_char5 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char5 -= 87;
-	// 		}
-	// 		reg_addr = 16*(16*(16*read_char1 + read_char2)+read_char4)+read_char5;
-	// 		xil_printf("Desired Register Address: %x\r\n", reg_addr);
-
-	// 		read_char1 = 0;
-	// 		read_char2 = 0;
-	// 		xil_printf("\r\nPlease enter value of image sensor register, in hex, with small letters (2 nibbles): \r\n");
-	// 		//A, B, C,..., F need to be entered with small letters
-	// 		while (read_char1 < 48) {
-	// 			read_char1 = getchar();
-	// 		}
-	// 		while (read_char2 < 48) {
-	// 			read_char2 = getchar(); getchar();
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char1 <= 57) {
-	// 			read_char1 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char1 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char2 <= 57) {
-	// 			read_char2 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char2 -= 87;
-	// 		}
-	// 		reg_value = 16*read_char1 + read_char2;
-	// 		xil_printf("Desired Register Value: %x\r\n", reg_value);
-	// 		cam.writeReg(reg_addr, reg_value);
-	// 		xil_printf("Register write done.\r\n");
-
-	// 		break;
-
-	// 	case 'f':
-	// 		xil_printf("Please enter address of image sensor register, in hex, with small letters (4 nibbles): \r\n");
-	// 		//A, B, C,..., F need to be entered with small letters
-	// 		while (read_char1 < 48) {
-	// 			read_char1 = getchar();
-	// 		}
-	// 		while (read_char2 < 48) {
-	// 			read_char2 = getchar();
-	// 		}
-	// 		while (read_char4 < 48) {
-	// 			read_char4 = getchar();
-	// 		}
-	// 		while (read_char5 < 48) {
-	// 			read_char5 = getchar(); getchar();
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char1 <= 57) {
-	// 			read_char1 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char1 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char2 <= 57) {
-	// 			read_char2 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char2 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char4 <= 57) {
-	// 			read_char4 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char4 -= 87;
-	// 		}
-	// 		// If character is a digit, convert from ASCII code to a digit between 0 and 9
-	// 		if (read_char5 <= 57) {
-	// 			read_char5 -= 48;
-	// 		}
-	// 		// If character is a letter, convert ASCII code to a number between 10 and 15
-	// 		else {
-	// 			read_char5 -= 87;
-	// 		}
-	// 		reg_addr = 16*(16*(16*read_char1 + read_char2)+read_char4)+read_char5;
-	// 		xil_printf("Desired Register Address: %x\r\n", reg_addr);
-
-	// 		cam.readReg(reg_addr, reg_value);
-	// 		xil_printf("Value of Desired Register: %x\r\n", reg_value);
-	// 		break;
-
-	// 	case 'g':
-	// 		xil_printf("  Please press the key corresponding to the desired Gamma factor:\r\n");
-	// 		xil_printf("    1. Gamma Factor = 1\r\n");
-	// 		xil_printf("    2. Gamma Factor = 1/1.2\r\n");
-	// 		xil_printf("    3. Gamma Factor = 1/1.5\r\n");
-	// 		xil_printf("    4. Gamma Factor = 1/1.8\r\n");
-	// 		xil_printf("    5. Gamma Factor = 1/2.2\r\n");
-			
-    //         read_char1 = getchar(); getchar();
-
-	// 		xil_printf("Read: %d\r\n", read_char1);
-    //         // Convert from ASCII to numeric
-	// 		read_char1 = read_char1 - 48;
-	// 		if ((read_char1 > 0) && (read_char1 < 6)) {
-	// 			Xil_Out32(GAMMA_BASE_ADDR, read_char1-1);
-	// 			xil_printf("Gamma value changed to option %d.\r\n", read_char1);
-	// 		}
-	// 		else {
-	// 			xil_printf("  Selection is outside the available options! Please retry...\r\n");
-	// 		}
-	// 		break;
-
-	// 	case 'h':
-	// 		xil_printf("  Please press the key corresponding to the desired AWB change:\r\n");
-	// 		xil_printf("    1. Enable Advanced AWB\r\n");
-	// 		xil_printf("    2. Enable Simple AWB\r\n");
-	// 		xil_printf("    3. Disable AWB\r\n");
-			
-    //         read_char1 = getchar(); getchar();
-			
-    //         xil_printf("Read: %d\r\n", read_char1);
-			
-    //         switch (read_char1)
-    //         {
-	// 		case '1':
-	// 			cam.set_awb(OV9281_cfg::awb_t::AWB_ADVANCED);
-	// 			xil_printf("Enabled Advanced AWB\r\n");
-	// 			break;
-	// 		case '2':
-	// 			cam.set_awb(OV9281_cfg::awb_t::AWB_SIMPLE);
-	// 			xil_printf("Enabled Simple AWB\r\n");
-	// 			break;
-	// 		case '3':
-	// 			cam.set_awb(OV9281_cfg::awb_t::AWB_DISABLED);
-	// 			xil_printf("Disabled AWB\r\n");
-	// 			break;
-	// 		default:
-	// 			xil_printf("  Selection is outside the available options! Please retry...\r\n");
-	// 		}
-	// 		break;
-
-	// 	default:
-	// 		xil_printf("  Selection is outside the available options! Please retry...\r\n");
-	// 	}
-
-	// 	read_char1 = 0;
-	// 	read_char2 = 0;
-	// 	read_char4 = 0;
-	// 	read_char5 = 0;
-	// }
 
 	//cleanup_platform();
     //Xil_ICacheDisable();
@@ -434,6 +137,35 @@ uint8_t dGetChar()
         }
     }
     return chRxCh;
+}
+
+static int init_csi_subsystem(){
+    // Initialize the CSI-2 Rx Subsystem
+    CsiCfg = XCsiSs_LookupConfig(XPAR_MIPI_CSI2_RX_SUBSYST_0_BASEADDR);
+    if (CsiCfg == NULL) {
+        xil_printf("ERROR [zybo_ov9281_app::init_csi_subsystem] XCsiSs_LookupConfig failed\r\n");
+        return XST_FAILURE;
+    }
+    if (XCsiSs_CfgInitialize(&CsiInstance, CsiCfg, CsiCfg->BaseAddr) != XST_SUCCESS) {
+        xil_printf("ERROR [zybo_ov9281_app::init_csi_subsystem] XCsiSs_CfgInitialize failed\r\n");
+        return XST_FAILURE;
+    }
+    if (XCsiSs_Reset(&CsiInstance) != XST_SUCCESS) {
+        xil_printf("ERROR [zybo_ov9281_app::init_csi_subsystem] XCsiSs_Reset failed\r\n");
+        return XST_FAILURE;
+    }
+    // ActiveLanes must match the number of MIPI data lanes wired in hardware
+    if (XCsiSs_Configure(&CsiInstance, CsiCfg->LanesPresent, 0) != XST_SUCCESS) {
+        xil_printf("ERROR [zybo_ov9281_app::init_csi_subsystem] XCsiSs_Configure failed\r\n");
+        return XST_FAILURE;
+    }
+    if (XCsiSs_Activate(&CsiInstance, XCSI_ENABLE) != XST_SUCCESS) {
+        xil_printf("ERROR [zybo_ov9281_app::init_csi_subsystem] XCsiSs_Activate failed\r\n");
+        return XST_FAILURE;
+    }
+
+    xil_printf("INFO [zybo_ov9281_app::init_csi_subsystem] Num mipi lanes: %d\r\n", CsiCfg->LanesPresent);
+    return XST_SUCCESS;
 }
 
 // void pipeline_mode_change(AXI_VDMA<ScuGicInterruptController>& vdma_driver,

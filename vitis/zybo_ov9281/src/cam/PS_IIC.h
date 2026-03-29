@@ -1,170 +1,84 @@
-/*
- * I2C_ClientAXI_IIC.h
- *
- *  Created on: May 26, 2016
- *      Author: Elod
- */
-
-#ifndef I2C_CLIENTAXI_IIC_H_
-#define I2C_CLIENTAXI_IIC_H_
-
-#include "I2C_Client.h"
-
-#include <stdio.h>
-#include <stdint.h>
-#include <string>
-#include <stdexcept>
-#include <functional>
+#ifndef PS_IIC_H_
+#define PS_IIC_H_
 
 #include "xiicps.h"
+#include "xil_printf.h"
 
-#define STRINGIZE(x) STRINGIZE2(x)
-#define STRINGIZE2(x) #x
-#define LINE_STRING STRINGIZE(__LINE__)
-
-namespace digilent {
-
-using namespace std::placeholders;
-
-template <typename IrptCtl>
-class PS_IIC: public I2C_Client {
+class PS_IIC {
 public:
+    PS_IIC(UINTPTR base, u32 sclk_rate_Hz) : _base(base), _sclk_rate(sclk_rate_Hz), _instance{} {}
 
-	// Shim function to extract function object from CallbackRef and call it
-	// This should call our member function handlers below
-	template <typename Func>
-	static void MyCallback(void* CallbackRef, u32 StatusEvent)
-	{
-		auto pfn = static_cast<Func*>(CallbackRef);
-		pfn->operator()(StatusEvent);
-	}
+    // LookupConfig + CfgInitialize + SelfTest + SetSClk.
+    // Returns XST_SUCCESS or XST_FAILURE.
+    int init() {
+        XIicPs_Config *cfg = XIicPs_LookupConfig(_base);
+        if (cfg == NULL) {
+            xil_printf("ERROR [PS_IIC::init()] LookupConfig failed for base 0x%08X\r\n", _base);
+            return XST_FAILURE;
+        }
+        int status = XIicPs_CfgInitialize(&_instance, cfg, _base);
+        if (status != XST_SUCCESS) {
+            xil_printf("ERROR [PS_IIC::init()] CfgInitialize failed (%d)\r\n", status);
+            return XST_FAILURE;
+        }
+        status = XIicPs_SelfTest(&_instance);
+        if (status != XST_SUCCESS) {
+            xil_printf("ERROR [PS_IIC::init()] SelfTest failed (%d)\r\n", status);
+            return XST_FAILURE;
+        }
+        status = XIicPs_SetSClk(&_instance, _sclk_rate);
+        if (status != XST_SUCCESS) {
+            xil_printf("ERROR [PS_IIC::init()] SetSClk failed (%d)\r\n", status);
+            return XST_FAILURE;
+        }
+        xil_printf("INFO [PS_IIC::init()] Ready at base 0x%08X @ %d Hz\r\n", _base, _sclk_rate);
+        return XST_SUCCESS;
+    }
 
-	PS_IIC(uint32_t dev_id, IrptCtl& irpt_ctl, uint32_t irpt_id, uint32_t sclk_rate_Hz) :
-		drv_inst_(),
-		irpt_ctl_(irpt_ctl),
-		stat_handler_(std::bind(&PS_IIC::StatusHandler, this, _1))
-	{
-		XIicPs_Config* ConfigPtr;
-		XStatus Status;
+    // Write `len` bytes to 7-bit slave `addr`.
+    int write(u8 addr, u8 *data, unsigned len) {
+        int status = XIicPs_MasterSendPolled(&_instance, data, len, addr);
+        if (status != XST_SUCCESS) return XST_FAILURE;
+        while (XIicPs_BusIsBusy(&_instance));
+        return XST_SUCCESS;
+    }
 
-		// Initialize the IIC driver so that it is ready to use.
-		ConfigPtr = XIicPs_LookupConfig(dev_id);
-		if (ConfigPtr == NULL) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
-		}
+    // Read `len` bytes from 7-bit slave `addr`.
+    int read(u8 addr, u8 *buf, unsigned len) {
+        int status = XIicPs_MasterRecvPolled(&_instance, buf, len, addr);
+        if (status != XST_SUCCESS) return XST_FAILURE;
+        while (XIicPs_BusIsBusy(&_instance));
+        return XST_SUCCESS;
+    }
 
-		Status = XIicPs_CfgInitialize(&drv_inst_, ConfigPtr,
-			ConfigPtr->BaseAddress);
-		if (Status != XST_SUCCESS) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
-		}
+    // Combined write+read for 16-bit addressed, 8-bit value registers.
+    // Wire: START|addr+W|reg_hi|reg_lo|RSTART|addr+R|data...|STOP
+    int reg16_read(u8 addr, u16 reg, u8 *buf, unsigned len) {
+        u8 reg_bytes[2] = { (u8)(reg >> 8), (u8)(reg & 0xFF) };
+        XIicPs_SetOptions(&_instance, XIICPS_REP_START_OPTION);
+        int status = XIicPs_MasterSendPolled(&_instance, reg_bytes, 2, addr);
+        XIicPs_ClearOptions(&_instance, XIICPS_REP_START_OPTION);
+        if (status != XST_SUCCESS) return XST_FAILURE;
+        status = XIicPs_MasterRecvPolled(&_instance, buf, len, addr);
+        if (status != XST_SUCCESS) return XST_FAILURE;
+        while (XIicPs_BusIsBusy(&_instance));
+        return XST_SUCCESS;
+    }
 
-		Status = XIicPs_SelfTest(&drv_inst_);
-		if (Status != XST_SUCCESS)
-		{
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
-		}
-
-	    Status = XIicPs_SetSClk(&drv_inst_, sclk_rate_Hz);
-		if (Status != XST_SUCCESS)
-		{
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
-		}
-
-		//Register the IIC handler with the interrupt controller
-		irpt_ctl_.registerHandler(irpt_id,
-                                  reinterpret_cast<typename IrptCtl::Handler>(&XIicPs_MasterInterruptHandler),
-                                  &drv_inst_
-                                  );
-        irpt_ctl_.enableInterrupt(irpt_id);
-		irpt_ctl_.enableInterrupts();
-
-		XIicPs_SetStatusHandler(&drv_inst_, 
-                                &stat_handler_, 
-                                &MyCallback<decltype(stat_handler_)>
-                                );
-	}
-
-	virtual void read(uint8_t addr, uint8_t* buf, size_t count) override
-	{
-		// Receive the Data.
-
-		resetFlags();
-
-		XIicPs_MasterRecv(&drv_inst_, buf, count, addr);
-
-		// Wait till all the data is received.
-		while (!rx_complete_flag_ && !slave_nack_flag_ && !arb_lost_flag_ && !other_error_flag_);
-
-		if (slave_nack_flag_) throw TransmitError("Slave NACK");
-		if (arb_lost_flag_) throw TransmitError("Arbitration lost");
-		if (other_error_flag_) throw TransmitError("Other I2C error");
-	}
-
-	virtual void write(uint8_t addr,  uint8_t const* buf, size_t count) override
-	{
-		//xintc.h is not const-correct, so we create local copy
-		std::vector<uint8_t> buf_local(count);
-		buf_local.assign(buf, buf+count);
-
-		resetFlags();
-
-		XIicPs_MasterSend(&drv_inst_, buf_local.data(), buf_local.size(), addr);
-
-		while (!tx_complete_flag_ && !slave_nack_flag_ && !arb_lost_flag_ && !other_error_flag_);
-
-		if (slave_nack_flag_) throw TransmitError("Slave NACK");
-		if (arb_lost_flag_) throw TransmitError("Arbitration lost");
-		if (other_error_flag_) throw TransmitError("Other I2C error");
-	}
-
-    ~PS_IIC() {}
+    // Write 1 byte `val` to 16-bit addressed register.
+    // Wire: START|addr+W|reg_hi|reg_lo|val|STOP
+    int reg16_write(u8 addr, u16 reg, u8 val) {
+        u8 buf[3] = { (u8)(reg >> 8), (u8)(reg & 0xFF), val };
+        int status = XIicPs_MasterSendPolled(&_instance, buf, 3, addr);
+        if (status != XST_SUCCESS) return XST_FAILURE;
+        while (XIicPs_BusIsBusy(&_instance));
+        return XST_SUCCESS;
+    }
 
 private:
-	void StatusHandler(int Event)
-	{
-		if (Event & XIICPS_EVENT_COMPLETE_SEND) //Transmit Complete Event
-		{
-			tx_complete_flag_ = 1;
-		}
-		if (Event & XIICPS_EVENT_COMPLETE_RECV)  //Receive Complete Event
-		{
-			rx_complete_flag_ = 1;
-		}
-		if (Event & XIICPS_EVENT_NACK)	// Slave did not ACK (had error)
-		{
-			slave_nack_flag_ = 1;
-		}
-		if (Event & XIICPS_EVENT_ARB_LOST) 		// Arbitration was lost
-		{
-			arb_lost_flag_ = 1;
-		}
-		if (Event & (XIICPS_EVENT_TIME_OUT |	//Transfer timed out
-				XIICPS_EVENT_ERROR |		// Receive error
-				XIICPS_EVENT_SLAVE_RDY))	// Bus transitioned to not busy
-		{
-			other_error_flag_ = 1;
-		}
-	}
-	void resetFlags()
-	{
-		tx_complete_flag_ = 0;	// Flag to check completion of Transmission
-		rx_complete_flag_ = 0;	// Flag to check completion of Reception
-		slave_nack_flag_ = 0;	// Flag to check for NACK error
-		arb_lost_flag_ = 0; 		// Flag to check for arbitration lost error
-		other_error_flag_ = 0;
-	}
-private:
-	XIicPs drv_inst_;
-	IrptCtl& irpt_ctl_;
-	std::function<void(int)> stat_handler_;
-	volatile uint8_t tx_complete_flag_;	// Flag to check completion of Transmission
-	volatile uint8_t rx_complete_flag_;	// Flag to check completion of Reception
-	volatile uint8_t slave_nack_flag_;	// Flag to check completion of Reception
-	volatile uint8_t arb_lost_flag_;	// Flag to check completion of Reception
-	volatile uint8_t other_error_flag_;	// Flag to check completion of Transmission
+    UINTPTR _base;
+    u32     _sclk_rate;
+    XIicPs  _instance;
 };
 
-} /* namespace digilent */
-
-#endif /* I2C_CLIENTAXI_IIC_H_ */
+#endif /* PS_IIC_H_ */

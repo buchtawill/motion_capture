@@ -9,16 +9,13 @@
 #define VIDEOSOURCE_H_
 
 #include <stdint.h>
-#include <stdexcept>
 #include <cstring>
 
+#include "xil_printf.h"
 #include "xaxivdma.h"
 #include "xvtc.h"
 #include "xclk_wiz.h"
 
-#define STRINGIZE(x) STRINGIZE2(x)
-#define STRINGIZE2(x) #x
-#define LINE_STRING STRINGIZE(__LINE__)
 
 namespace digilent {
 
@@ -51,47 +48,58 @@ timing_t const timing[] =
 class VideoOutput
 {
 public:
-	VideoOutput(u32 VTC_dev_id, u32 clkwiz_dev_id)
+	VideoOutput(u32 VTC_dev_id, u32 clkwiz_dev_id) :
+		vtc_dev_id_(VTC_dev_id),
+		clkwiz_dev_id_(clkwiz_dev_id)
+	{}
+
+	XStatus init()
 	{
 		XVtc_Config *psVtcConfig;
 		XStatus Status;
 
-		psVtcConfig = XVtc_LookupConfig(VTC_dev_id);
+		psVtcConfig = XVtc_LookupConfig(vtc_dev_id_);
 		if (NULL == psVtcConfig) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
+			xil_printf("ERROR [VideoOutput::init()] VTC LookupConfig failed\r\n");
+			return XST_DEVICE_NOT_FOUND;
 		}
 
 		Status = XVtc_CfgInitialize(
-            &sVtc_, 
-            psVtcConfig, 
+            &sVtc_,
+            psVtcConfig,
             psVtcConfig->BaseAddress
         );
 		if (Status != XST_SUCCESS) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
+			xil_printf("ERROR [VideoOutput::init()] VTC CfgInitialize failed\r\n");
+			return XST_FAILURE;
 		}
 
 		XClk_Wiz_Config *psClkWizConfig;
-		psClkWizConfig = XClk_Wiz_LookupConfig(clkwiz_dev_id);
+		psClkWizConfig = XClk_Wiz_LookupConfig(clkwiz_dev_id_);
 		if (NULL == psClkWizConfig) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
+			xil_printf("ERROR [VideoOutput::init()] ClkWiz LookupConfig failed\r\n");
+			return XST_DEVICE_NOT_FOUND;
 		}
 
 		Status = XClk_Wiz_CfgInitialize(
-            &sClkWiz_, 
-            psClkWizConfig, 
+            &sClkWiz_,
+            psClkWizConfig,
             psClkWizConfig->BaseAddr
         );
 		if (Status != XST_SUCCESS) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
+			xil_printf("ERROR [VideoOutput::init()] ClkWiz CfgInitialize failed\r\n");
+			return XST_FAILURE;
 		}
 		//Reset clock to hardware default
 		XClk_Wiz_WriteReg(
-            sClkWiz_.Config.BaseAddr, 
-            0x0, 
+            sClkWiz_.Config.BaseAddr,
+            0x0,
             0x0000000A
         );
 		//Wait for lock because we will need it later for initializing other IP
 		while (!(XClk_Wiz_ReadReg(sClkWiz_.Config.BaseAddr, 0x4) & 0x1));
+
+		return XST_SUCCESS;
 	}
 
 	void reset()
@@ -181,6 +189,8 @@ public:
 	~VideoOutput() = default;
 
 private:
+	u32 vtc_dev_id_;
+	u32 clkwiz_dev_id_;
 	XVtc sVtc_;
 	XClk_Wiz sClkWiz_;
 };

@@ -46,7 +46,7 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
 
 # The design that will be created by this Tcl script contains the following 
 # module references:
-# DVIClocking
+# DVIClocking, vid_8bpp_2px_to_rgb
 
 # Please add the sources of those modules before sourcing this Tcl script.
 
@@ -147,6 +147,7 @@ xilinx.com:ip:v_axi4s_vid_out:4.0\
 xilinx.com:ip:v_tc:6.2\
 xilinx.com:ip:system_ila:1.1\
 xilinx.com:ip:mipi_csi2_rx_subsystem:6.0\
+xilinx.com:ip:xlconstant:1.1\
 "
 
    set list_ips_missing ""
@@ -173,6 +174,7 @@ set bCheckModules 1
 if { $bCheckModules == 1 } {
    set list_check_mods "\ 
 DVIClocking\
+vid_8bpp_2px_to_rgb\
 "
 
    set list_mods_missing ""
@@ -415,10 +417,10 @@ proc create_root_design { parentCell } {
     CONFIG.PCW_FPGA_FCLK0_ENABLE {1} \
     CONFIG.PCW_GP0_EN_MODIFIABLE_TXN {0} \
     CONFIG.PCW_GP0_NUM_READ_THREADS {4} \
-    CONFIG.PCW_GP0_NUM_WRITE_THREADS {2} \
+    CONFIG.PCW_GP0_NUM_WRITE_THREADS {4} \
     CONFIG.PCW_GP1_EN_MODIFIABLE_TXN {0} \
     CONFIG.PCW_GP1_NUM_READ_THREADS {4} \
-    CONFIG.PCW_GP1_NUM_WRITE_THREADS {2} \
+    CONFIG.PCW_GP1_NUM_WRITE_THREADS {4} \
     CONFIG.PCW_GPIO_BASEADDR {0xE000A000} \
     CONFIG.PCW_GPIO_EMIO_GPIO_ENABLE {1} \
     CONFIG.PCW_GPIO_EMIO_GPIO_IO {1} \
@@ -703,10 +705,8 @@ proc create_root_design { parentCell } {
     CONFIG.PCW_SPI_PERIPHERAL_VALID {0} \
     CONFIG.PCW_S_AXI_HP0_DATA_WIDTH {64} \
     CONFIG.PCW_S_AXI_HP0_ID_WIDTH {6} \
-    CONFIG.PCW_S_AXI_HP1_DATA_WIDTH {64} \
     CONFIG.PCW_S_AXI_HP2_DATA_WIDTH {64} \
     CONFIG.PCW_S_AXI_HP2_ID_WIDTH {6} \
-    CONFIG.PCW_S_AXI_HP3_DATA_WIDTH {64} \
     CONFIG.PCW_TPIU_PERIPHERAL_CLKSRC {External} \
     CONFIG.PCW_TRACE_INTERNAL_WIDTH {2} \
     CONFIG.PCW_TRACE_PERIPHERAL_ENABLE {0} \
@@ -862,9 +862,10 @@ proc create_root_design { parentCell } {
     CONFIG.c_include_mm2s_dre {0} \
     CONFIG.c_include_s2mm {1} \
     CONFIG.c_m_axi_s2mm_data_width {64} \
-    CONFIG.c_m_axis_mm2s_tdata_width {8} \
-    CONFIG.c_mm2s_linebuffer_depth {512} \
-    CONFIG.c_num_fstores {2} \
+    CONFIG.c_m_axis_mm2s_tdata_width {16} \
+    CONFIG.c_mm2s_linebuffer_depth {1024} \
+    CONFIG.c_mm2s_max_burst_length {32} \
+    CONFIG.c_num_fstores {1} \
     CONFIG.c_s2mm_genlock_mode {2} \
     CONFIG.c_s2mm_linebuffer_depth {1024} \
   ] $axi_vdma_0
@@ -874,9 +875,9 @@ proc create_root_design { parentCell } {
   set clk_wiz_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz:6.0 clk_wiz_0 ]
   set_property -dict [list \
     CONFIG.CLKOUT1_DRIVES {BUFG} \
-    CONFIG.CLKOUT1_JITTER {174.353} \
+    CONFIG.CLKOUT1_JITTER {151.366} \
     CONFIG.CLKOUT1_PHASE_ERROR {132.063} \
-    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {50} \
+    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {100} \
     CONFIG.CLKOUT2_DRIVES {BUFG} \
     CONFIG.CLKOUT2_JITTER {139.594} \
     CONFIG.CLKOUT2_PHASE_ERROR {132.063} \
@@ -891,13 +892,13 @@ proc create_root_design { parentCell } {
     CONFIG.CLKOUT5_DRIVES {BUFG} \
     CONFIG.CLKOUT6_DRIVES {BUFG} \
     CONFIG.CLKOUT7_DRIVES {BUFG} \
-    CONFIG.CLK_OUT1_PORT {clk_out50} \
+    CONFIG.CLK_OUT1_PORT {clk_out100} \
     CONFIG.CLK_OUT2_PORT {clk_out150} \
     CONFIG.CLK_OUT3_PORT {clk_out200} \
     CONFIG.MMCM_CLKFBOUT_MULT_F {6.000} \
     CONFIG.MMCM_CLKIN1_PERIOD {10.0} \
     CONFIG.MMCM_CLKIN2_PERIOD {10.0} \
-    CONFIG.MMCM_CLKOUT0_DIVIDE_F {12.000} \
+    CONFIG.MMCM_CLKOUT0_DIVIDE_F {6.000} \
     CONFIG.MMCM_CLKOUT1_DIVIDE {4} \
     CONFIG.MMCM_CLKOUT2_DIVIDE {3} \
     CONFIG.MMCM_DIVCLK_DIVIDE {1} \
@@ -927,6 +928,7 @@ proc create_root_design { parentCell } {
   set v_axi4s_vid_out_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:v_axi4s_vid_out:4.0 v_axi4s_vid_out_0 ]
   set_property -dict [list \
     CONFIG.C_HAS_ASYNC_CLK {1} \
+    CONFIG.C_PIXELS_PER_CLOCK {2} \
     CONFIG.C_S_AXIS_VIDEO_FORMAT {2} \
     CONFIG.C_VTG_MASTER_SLAVE {1} \
   ] $v_axi4s_vid_out_0
@@ -1013,15 +1015,19 @@ proc create_root_design { parentCell } {
   ] $axi_mem_intercon
 
 
-  # Create instance: xlconcat_1, and set properties
-  set xlconcat_1 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_1 ]
-  set_property -dict [list \
-    CONFIG.IN0_WIDTH {8} \
-    CONFIG.IN1_WIDTH {8} \
-    CONFIG.IN2_WIDTH {8} \
-    CONFIG.NUM_PORTS {3} \
-  ] $xlconcat_1
-
+  # Create instance: vid_8bpp_2px_to_rgb_0, and set properties
+  set block_name vid_8bpp_2px_to_rgb
+  set block_cell_name vid_8bpp_2px_to_rgb_0
+  if { [catch {set vid_8bpp_2px_to_rgb_0 [create_bd_cell -type module -reference $block_name $block_cell_name] } errmsg] } {
+     catch {common::send_gid_msg -ssname BD::TCL -id 2095 -severity "ERROR" "Unable to add referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
+     return 1
+   } elseif { $vid_8bpp_2px_to_rgb_0 eq "" } {
+     catch {common::send_gid_msg -ssname BD::TCL -id 2096 -severity "ERROR" "Unable to referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
+     return 1
+   }
+  
+  # Create instance: xlconstant_0, and set properties
+  set xlconstant_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_0 ]
 
   # Create interface connections
   connect_bd_intf_net -intf_net AXI_GammaCorrection_0_m_axis_video [get_bd_intf_pins axi_vdma_0/S_AXIS_S2MM] [get_bd_intf_pins mipi_csi2_rx_subsyst_0/video_out]
@@ -1049,7 +1055,7 @@ connect_bd_intf_net -intf_net axi_vdma_0_M_AXIS_MM2S [get_bd_intf_pins axi_vdma_
   connect_bd_net -net DVIClocking_0_SerialClk [get_bd_pins DVIClocking_0/SerialClk] [get_bd_pins rgb2dvi_0/SerialClk]
   connect_bd_net -net DVIClocking_0_aLockedOut [get_bd_pins DVIClocking_0/aLockedOut] [get_bd_pins rst_vid_clk_dyn/dcm_locked]
   connect_bd_net -net PixelClk_Generator_clk_out1 [get_bd_pins DVIClocking_0/PixelClk] [get_bd_pins rgb2dvi_0/PixelClk] [get_bd_pins rst_vid_clk_dyn/slowest_sync_clk] [get_bd_pins v_axi4s_vid_out_0/vid_io_out_clk] [get_bd_pins vtg/clk]
-  connect_bd_net -net axi_vdma_0_m_axis_mm2s_tdata [get_bd_pins axi_vdma_0/m_axis_mm2s_tdata] [get_bd_pins xlconcat_1/In0] [get_bd_pins xlconcat_1/In1] [get_bd_pins xlconcat_1/In2]
+  connect_bd_net -net axi_vdma_0_m_axis_mm2s_tdata [get_bd_pins axi_vdma_0/m_axis_mm2s_tdata] [get_bd_pins vid_8bpp_2px_to_rgb_0/y8x2_in]
   connect_bd_net -net axi_vdma_0_m_axis_mm2s_tlast [get_bd_pins axi_vdma_0/m_axis_mm2s_tlast] [get_bd_pins v_axi4s_vid_out_0/s_axis_video_tlast]
   connect_bd_net -net axi_vdma_0_m_axis_mm2s_tuser [get_bd_pins axi_vdma_0/m_axis_mm2s_tuser] [get_bd_pins v_axi4s_vid_out_0/s_axis_video_tuser]
   connect_bd_net -net axi_vdma_0_m_axis_mm2s_tvalid [get_bd_pins axi_vdma_0/m_axis_mm2s_tvalid] [get_bd_pins v_axi4s_vid_out_0/s_axis_video_tvalid]
@@ -1074,13 +1080,14 @@ connect_bd_intf_net -intf_net axi_vdma_0_M_AXIS_MM2S [get_bd_intf_pins axi_vdma_
   connect_bd_net -net rst_clk_wiz_0_50M_peripheral_aresetn [get_bd_pins rst_clk_wiz_0_50M/peripheral_aresetn] [get_bd_pins axi_vdma_0/axi_resetn] [get_bd_pins ps7_0_axi_periph/S00_ARESETN] [get_bd_pins ps7_0_axi_periph/M00_ARESETN] [get_bd_pins ps7_0_axi_periph/M01_ARESETN] [get_bd_pins ps7_0_axi_periph/M02_ARESETN] [get_bd_pins ps7_0_axi_periph/M03_ARESETN] [get_bd_pins v_axi4s_vid_out_0/aresetn] [get_bd_pins video_dynclk/s_axi_aresetn] [get_bd_pins vtg/s_axi_aresetn] [get_bd_pins rst_clk_wiz_0_150M/ext_reset_in] [get_bd_pins mipi_csi2_rx_subsyst_0/lite_aresetn] [get_bd_pins mipi_csi2_rx_subsyst_0/video_aresetn] [get_bd_pins axi_mem_intercon_1/S00_ARESETN] [get_bd_pins axi_mem_intercon_1/M00_ARESETN] [get_bd_pins axi_mem_intercon/S00_ARESETN] [get_bd_pins axi_mem_intercon/M00_ARESETN] [get_bd_pins ps7_0_axi_periph/S01_ARESETN]
   connect_bd_net -net rst_vid_clk_dyn_peripheral_aresetn [get_bd_pins rst_vid_clk_dyn/peripheral_aresetn] [get_bd_pins vtg/resetn]
   connect_bd_net -net rst_vid_clk_dyn_peripheral_reset [get_bd_pins rst_vid_clk_dyn/peripheral_reset] [get_bd_pins v_axi4s_vid_out_0/vid_io_out_reset]
-  connect_bd_net -net s_axil_clk_50 [get_bd_pins clk_wiz_0/clk_out150] [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] [get_bd_pins rst_clk_wiz_0_50M/slowest_sync_clk] [get_bd_pins axi_vdma_0/s_axi_lite_aclk] [get_bd_pins ps7_0_axi_periph/ACLK] [get_bd_pins ps7_0_axi_periph/S00_ACLK] [get_bd_pins ps7_0_axi_periph/M00_ACLK] [get_bd_pins ps7_0_axi_periph/M01_ACLK] [get_bd_pins ps7_0_axi_periph/M02_ACLK] [get_bd_pins ps7_0_axi_periph/M03_ACLK] [get_bd_pins video_dynclk/s_axi_aclk] [get_bd_pins vtg/s_axi_aclk] [get_bd_pins mipi_csi2_rx_subsyst_0/lite_aclk] [get_bd_pins mipi_csi2_rx_subsyst_0/video_aclk] [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] [get_bd_pins processing_system7_0/S_AXI_HP2_ACLK] [get_bd_pins axi_vdma_0/m_axi_mm2s_aclk] [get_bd_pins axi_vdma_0/m_axis_mm2s_aclk] [get_bd_pins axi_vdma_0/m_axi_s2mm_aclk] [get_bd_pins axi_vdma_0/s_axis_s2mm_aclk] [get_bd_pins v_axi4s_vid_out_0/aclk] [get_bd_pins system_ila_0/clk] [get_bd_pins rst_clk_wiz_0_150M/slowest_sync_clk] [get_bd_pins axi_mem_intercon_1/ACLK] [get_bd_pins axi_mem_intercon_1/M00_ACLK] [get_bd_pins axi_mem_intercon_1/S00_ACLK] [get_bd_pins axi_mem_intercon/ACLK] [get_bd_pins axi_mem_intercon/M00_ACLK] [get_bd_pins axi_mem_intercon/S00_ACLK] [get_bd_pins processing_system7_0/M_AXI_GP1_ACLK] [get_bd_pins ps7_0_axi_periph/S01_ACLK]
+  connect_bd_net -net s_axil_clk_50 [get_bd_pins clk_wiz_0/clk_out100] [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] [get_bd_pins rst_clk_wiz_0_50M/slowest_sync_clk] [get_bd_pins axi_vdma_0/s_axi_lite_aclk] [get_bd_pins ps7_0_axi_periph/ACLK] [get_bd_pins ps7_0_axi_periph/S00_ACLK] [get_bd_pins ps7_0_axi_periph/M00_ACLK] [get_bd_pins ps7_0_axi_periph/M01_ACLK] [get_bd_pins ps7_0_axi_periph/M02_ACLK] [get_bd_pins ps7_0_axi_periph/M03_ACLK] [get_bd_pins video_dynclk/s_axi_aclk] [get_bd_pins vtg/s_axi_aclk] [get_bd_pins mipi_csi2_rx_subsyst_0/lite_aclk] [get_bd_pins mipi_csi2_rx_subsyst_0/video_aclk] [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] [get_bd_pins processing_system7_0/S_AXI_HP2_ACLK] [get_bd_pins axi_vdma_0/m_axi_mm2s_aclk] [get_bd_pins axi_vdma_0/m_axis_mm2s_aclk] [get_bd_pins axi_vdma_0/m_axi_s2mm_aclk] [get_bd_pins axi_vdma_0/s_axis_s2mm_aclk] [get_bd_pins v_axi4s_vid_out_0/aclk] [get_bd_pins system_ila_0/clk] [get_bd_pins rst_clk_wiz_0_150M/slowest_sync_clk] [get_bd_pins axi_mem_intercon_1/ACLK] [get_bd_pins axi_mem_intercon_1/M00_ACLK] [get_bd_pins axi_mem_intercon_1/S00_ACLK] [get_bd_pins axi_mem_intercon/ACLK] [get_bd_pins axi_mem_intercon/M00_ACLK] [get_bd_pins axi_mem_intercon/S00_ACLK] [get_bd_pins processing_system7_0/M_AXI_GP1_ACLK] [get_bd_pins ps7_0_axi_periph/S01_ACLK]
   connect_bd_net -net v_axi4s_vid_out_0_locked [get_bd_pins v_axi4s_vid_out_0/locked] [get_bd_pins rgb2dvi_0/aRst_n]
   connect_bd_net -net v_axi4s_vid_out_0_s_axis_video_tready [get_bd_pins v_axi4s_vid_out_0/s_axis_video_tready] [get_bd_pins axi_vdma_0/m_axis_mm2s_tready]
   connect_bd_net -net v_axi4s_vid_out_0_vtg_ce [get_bd_pins v_axi4s_vid_out_0/vtg_ce] [get_bd_pins vtg/gen_clken]
   connect_bd_net -net v_tc_0_irq [get_bd_pins vtg/irq] [get_bd_pins xlconcat_0/In0]
+  connect_bd_net -net vid_8bpp_2px_to_rgb_0_rgb_out [get_bd_pins vid_8bpp_2px_to_rgb_0/rgb_out] [get_bd_pins v_axi4s_vid_out_0/s_axis_video_tdata]
   connect_bd_net -net xlconcat_0_dout [get_bd_pins xlconcat_0/dout] [get_bd_pins processing_system7_0/IRQ_F2P]
-  connect_bd_net -net xlconcat_1_dout [get_bd_pins xlconcat_1/dout] [get_bd_pins v_axi4s_vid_out_0/s_axis_video_tdata]
+  connect_bd_net -net xlconstant_0_dout [get_bd_pins xlconstant_0/dout] [get_bd_pins v_axi4s_vid_out_0/aclken] [get_bd_pins v_axi4s_vid_out_0/vid_io_out_ce] [get_bd_pins vtg/clken] [get_bd_pins vtg/s_axi_aclken]
 
   # Create address segments
   assign_bd_address -offset 0x43000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces processing_system7_0/Data] [get_bd_addr_segs axi_vdma_0/S_AXI_LITE/Reg] -force

@@ -44,6 +44,7 @@ proc checkRequiredFiles { origin_dir} {
   set files [list \
  "[file normalize "$origin_dir/src/bd/system.tcl"]"\
  "[file normalize "$origin_dir/src/hdl/SyncAsync.vhd"]"\
+ "[file normalize "$origin_dir/src/hdl/vid_8bpp_2px_to_rgb.v"]"\
  "[file normalize "$origin_dir/src/hdl/SyncAsyncReset.vhd"]"\
  "[file normalize "$origin_dir/src/hdl/DVIClocking.vhd"]"\
  "[file normalize "$origin_dir/src/constraints/ZyboZ7_A.xdc"]"\
@@ -189,6 +190,7 @@ set files [list \
  [file normalize "${origin_dir}/src/hdl/SyncAsync.vhd"] \
  [file normalize "${origin_dir}/src/hdl/SyncAsyncReset.vhd"] \
  [file normalize "${origin_dir}/src/hdl/DVIClocking.vhd"] \
+ [file normalize "${origin_dir}/src/hdl/vid_8bpp_2px_to_rgb.v"]\
 ]
 add_files -norecurse -fileset $obj $files
 
