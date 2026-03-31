@@ -8,13 +8,7 @@
 #ifndef IINTERRUPTCONTROLLER_H_
 #define IINTERRUPTCONTROLLER_H_
 
-#include <stdexcept>
-
 #include "xscugic.h"
-
-#define STRINGIZE(x) STRINGIZE2(x)
-#define STRINGIZE2(x) #x
-#define LINE_STRING STRINGIZE(__LINE__)
 
 namespace digilent {
 
@@ -22,44 +16,35 @@ class ScuGicInterruptController
 {
 public:
 	typedef Xil_InterruptHandler Handler;
-	typedef XStatus	Errc;
+	typedef XStatus Errc;
+
 	ScuGicInterruptController(uint32_t dev_id) :
-		drv_inst_()
+		drv_inst_(),
+		dev_id_(dev_id)
+	{}
+
+	Errc init()
 	{
-		XScuGic_Config* config = XScuGic_LookupConfig(dev_id);
+		XScuGic_Config* config = XScuGic_LookupConfig(dev_id_);
 		if (config == NULL)
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
+			return XST_DEVICE_NOT_FOUND;
 
-		XStatus Status;
-		// Initialize the Intc driver so that it is ready to use.
-		Status = XScuGic_CfgInitialize(
-            &drv_inst_, 
-            config, 
-            config->CpuBaseAddress
-        );
-		if (Status != XST_SUCCESS) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
-		}
+		XStatus status = XScuGic_CfgInitialize(&drv_inst_, config, config->CpuBaseAddress);
+		if (status != XST_SUCCESS)
+			return status;
 
-		Status = XScuGic_SelfTest(&drv_inst_);
-		if (Status != XST_SUCCESS) {
-			throw std::runtime_error(__FILE__ ":" LINE_STRING);
-		}
+		status = XScuGic_SelfTest(&drv_inst_);
+		return status;
 	}
+
 	Errc enableInterrupts()
 	{
-		// Connect the interrupt controller interrupt handler to the hardware
-		// interrupt handling logic in the ARM processor.
-
 		Xil_ExceptionRegisterHandler(
-                XIL_EXCEPTION_ID_INT,
-				(Xil_ExceptionHandler) XScuGic_InterruptHandler,
-				&drv_inst_
-        );
-
-		// Enable interrupts in the ARM
+			XIL_EXCEPTION_ID_INT,
+			(Xil_ExceptionHandler)XScuGic_InterruptHandler,
+			&drv_inst_
+		);
 		Xil_ExceptionEnable();
-
 		return XST_SUCCESS;
 	}
 
@@ -69,29 +54,13 @@ public:
 		return XST_SUCCESS;
 	}
 
-	template <typename ...Arg>
-	Errc registerHandler(uint32_t irpt_id,
-                         Handler handler,
-                         //void *CallbackRef
-                         Arg&& ...args
-                         )
+	Errc registerHandler(uint32_t irpt_id, Handler handler, void* ref)
 	{
-		XStatus Status;
+		XStatus status = XScuGic_Connect(&drv_inst_, irpt_id, handler, ref);
+		if (status != XST_SUCCESS)
+			return status;
 
-		Status = XScuGic_Connect(&drv_inst_,
-                                irpt_id,
-                                handler,
-                                //CallbackRef
-                                std::forward<Arg>(args)...
-        );
-
-		if (Status != XST_SUCCESS) {
-			return XST_FAILURE;
-		}
-
-		//Enable the interrupts for the IIC device.
 		XScuGic_Enable(&drv_inst_, irpt_id);
-
 		return XST_SUCCESS;
 	}
 
@@ -108,7 +77,8 @@ public:
 	}
 
 private:
-	XScuGic drv_inst_;
+	XScuGic  drv_inst_;
+	uint32_t dev_id_;
 };
 
 } /* namespace digilent */

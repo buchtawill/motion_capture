@@ -3,14 +3,17 @@
 #include "xcsiss.h"
 #include <xil_types.h>
 #include "xil_cache.h"
+#include "sleep.h"
 
 #include "cam/AXI_VDMA.h"
 #include "cam/pl_iic.hpp"
 #include "cam/OV9281.h"
+#include "cam/ScuGicInterruptController.h"
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
 #define CAM_I2C_DEVID		XPAR_XIIC_0_BASEADDR
 #define VDMA_DEVID          XPAR_AXI_VDMA_0_BASEADDR
+#define VDMA_WRITE_INTR_ID  XPAR_FABRIC_AXI_VDMA_0_INTR
 
 #define TCA9546_ADDR        0x74
 #define TCA9546_PORT2_EN    0x04    // Bit 2 = enable port 2 (0b00000100)
@@ -45,16 +48,25 @@ static int init_csi_subsystem();
 int main() {
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
 
+    digilent::ScuGicInterruptController gic(IRPT_CTL_DEVID);
+    if(gic.init() != XST_SUCCESS) error_handler("Failed to init GIC");
+    xil_printf("INFO [kv260_ov9281_app] Successful interrupt initialization\r\n");
+
     // Init MIPI CSI Receiver
     if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
 
     // Initialize VDMA
     AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)frame_buffer);
     if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
-    vdma.configureWrite(1280, 800);
+    vdma.resetWrite();
+    if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
+    if (vdma.connectWriteInterrupt(gic, VDMA_WRITE_INTR_ID) != XST_SUCCESS)                        
+        error_handler("Failed to connect VDMA interrupt");
     vdma.enableWrite();
+                                                                                                     
+    gic.enableInterrupts();
 
-    xil_printf("INFO [kv260_ov9281_app] VDMA initialized\r\n");
+    xil_printf("INFO [kv260_ov9281_app] VDMA initialized with interrupts\r\n");
     xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
 
     // Initialize PL i2c and route traffic to rpi connector
@@ -69,13 +81,18 @@ int main() {
     if (cam.init() != XST_SUCCESS) error_handler("Failed to init ov9281");
     if (cam.apply_default_mode() != XST_SUCCESS) error_handler("Failed to apply camera mode");
 
-
     xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
 
     // Xil_DCacheInvalidateRange((UINTPTR)frame_buffer, INTPTR(FB_SIZE_BYTES));
     // Xil_DCacheDisable();  // disables + flushes first
     while(1){
-
+        // for(u32 i = 0; i < 1000000; i++);
+        // vdma.resetWrite();
+        // if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
+        // vdma.enableWrite();
+        vdma.printWriteStatus();
+        xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0]: 0x%x\r\n", frame_buffer[0][0][0]);
+        usleep(1000000);
     }
     return 0;
 }
