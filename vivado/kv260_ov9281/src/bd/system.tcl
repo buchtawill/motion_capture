@@ -696,6 +696,7 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   set_property -dict [list \
     CONFIG.c_include_mm2s {0} \
     CONFIG.c_num_fstores {3} \
+    CONFIG.c_s2mm_max_burst_length {16} \
   ] $axi_vdma_0
 
 
