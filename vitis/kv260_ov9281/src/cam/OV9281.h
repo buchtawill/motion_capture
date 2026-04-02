@@ -443,13 +443,19 @@ public:
         }
         xil_printf("INFO [OV9281::init()] Chip ID OK: 0x%02X%02X\r\n", id_h, id_l);
 
-		// {0x0103, 0x01}, // Software reset. 1 = camera on
-		iic_.reg16_write(dev_address_, 0x0103, 0x00);
-		usleep(25000);
-		iic_.reg16_write(dev_address_, 0x0103, 0x01);
+		reset();
 
         return XST_SUCCESS;
     }
+
+	int reset(){
+		iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
+                             OV9281_MODE_STANDBY);
+		// {0x0103, 0x01}, // Software reset. 1 = camera on
+		iic_.reg16_write(dev_address_, 0x0103, 0x00);
+		usleep(50000);
+		iic_.reg16_write(dev_address_, 0x0103, 0x01);
+	}
 
     // Write the default register sequence (common + 1280x720 + 10-bit),
     // then start streaming and validate the written values.
@@ -459,17 +465,29 @@ public:
         ret = write_reg_array(OV9281_cfg::ov9281_common_regs);
         ret = write_reg_array(OV9281_cfg::ov9281_1280x800_regs);
         ret = write_reg_array(OV9281_cfg::op_8bit);
+    }
 
-		// enable test pattern
-		// iic_.reg16_write(dev_address_, 0x5e00, 0x80);
+	int enable_test_pattern(){
+		return iic_.reg16_write(dev_address_, 0x5e00, 0x80);
+	}
 
-        if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
+	int start_streaming(){
+		if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
                              OV9281_MODE_STREAMING) != XST_SUCCESS) {
-            xil_printf("ERROR [OV9281::apply_default_mode()] Failed to start streaming\r\n");
+            xil_printf("ERROR [OV9281::start_streaming()] Failed to start streaming\r\n");
             return XST_FAILURE;
         }
         return XST_SUCCESS;
-    }
+	}
+
+	int stop_streaming(){
+		if (iic_.reg16_write(dev_address_, OV9281_REG_MODE_SELECT,
+                             OV9281_MODE_STREAMING) != XST_SUCCESS) {
+            xil_printf("ERROR [OV9281::stop_streaming()] Failed to stop streaming\r\n");
+            return XST_FAILURE;
+        }
+        return XST_SUCCESS;
+	}
 
 private:
     int write_reg_array(const struct regval *regs) {

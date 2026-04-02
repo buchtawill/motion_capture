@@ -208,7 +208,7 @@ public:
 			throw std::runtime_error(__FILE__ ":" LINE_STRING);
 		}
 	}
-*/
+*/	
 
 	XStatus configureWrite(uint16_t h_res, uint16_t v_res) {
 		XStatus status;
@@ -275,6 +275,11 @@ public:
 		if (sr & XAXIVDMA_SR_ERR_INTERNAL_MASK) xil_printf("  ERR: internal\r\n");
 		if (sr & XAXIVDMA_SR_ERR_SLAVE_MASK)    xil_printf("  ERR: slave\r\n");
 		if (sr & XAXIVDMA_SR_ERR_DECODE_MASK)   xil_printf("  ERR: decode\r\n");
+	}
+
+	void print_s2mm_cr(){
+		u32 cr = XAxiVdma_ReadReg(this->dev_base_addr_ + XAXIVDMA_RX_OFFSET, XAXIVDMA_CR_OFFSET);
+    	xil_printf("INFO [AXI_VDMA::print_s2mm_cr] VDMA S2MM control register: 0x%08x\r\n", cr);
 	}
 
 	// void readHandler(uint32_t irq_types)

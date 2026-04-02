@@ -22,11 +22,11 @@
 XCsiSs_Config *CsiCfg;
 XCsiSs         CsiInstance;
 
-#define NUM_FRAMES 1
+#define NUM_FRAMES 3
 #define FRAME_SIZE_VERT  800
 #define FRAME_SIZE_HORZ  1280
 #define FB_SIZE_BYTES (NUM_FRAMES*FRAME_SIZE_VERT*FRAME_SIZE_HORZ)
-static uint8_t __attribute__((aligned(1024))) frame_buffer[NUM_FRAMES][FRAME_SIZE_VERT][FRAME_SIZE_HORZ];
+static volatile uint8_t __attribute__((aligned(1024))) frame_buffer[NUM_FRAMES][FRAME_SIZE_VERT][FRAME_SIZE_HORZ];
 
 void error_handler(const char* err){
     xil_printf("ERROR HANDLER: %s\r\n", err);
@@ -48,26 +48,9 @@ static int init_csi_subsystem();
 int main() {
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
 
-    digilent::ScuGicInterruptController gic(IRPT_CTL_DEVID);
-    if(gic.init() != XST_SUCCESS) error_handler("Failed to init GIC");
-    xil_printf("INFO [kv260_ov9281_app] Successful interrupt initialization\r\n");
-
-    // Init MIPI CSI Receiver
-    if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
-
-    // Initialize VDMA
-    AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)frame_buffer);
-    if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
-    vdma.resetWrite();
-    if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
-    if (vdma.connectWriteInterrupt(gic, VDMA_WRITE_INTR_ID) != XST_SUCCESS)                        
-        error_handler("Failed to connect VDMA interrupt");
-    vdma.enableWrite();
-                                                                                                     
-    gic.enableInterrupts();
-
-    xil_printf("INFO [kv260_ov9281_app] VDMA initialized with interrupts\r\n");
-    xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
+    // digilent::ScuGicInterruptController gic(IRPT_CTL_DEVID);
+    // if(gic.init() != XST_SUCCESS) error_handler("Failed to init GIC");
+    // xil_printf("INFO [kv260_ov9281_app] Successful interrupt initialization\r\n");
 
     // Initialize PL i2c and route traffic to rpi connector
     PL_IIC iic(CAM_I2C_DEVID);
@@ -75,23 +58,40 @@ int main() {
     if (init_iic_routing(iic) != XST_SUCCESS) error_handler("Failed to route i2c to mipi connector");
     xil_printf("INFO [kv260_ov9281_app] I2C initialized and routed to camera\r\n");
 
-
-    // Instantiate and initialize camera
+    // Instantiate, reset, and init camera
     OV9281 cam(iic);
+    cam.reset();
     if (cam.init() != XST_SUCCESS) error_handler("Failed to init ov9281");
     if (cam.apply_default_mode() != XST_SUCCESS) error_handler("Failed to apply camera mode");
 
+    // Init MIPI CSI Receiver
+    if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
+
+    // Initialize VDMA
+    AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)frame_buffer);
+    vdma.printWriteStatus();
+    if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
+    vdma.resetWrite();
+    if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
+    // if (vdma.connectWriteInterrupt(gic, VDMA_WRITE_INTR_ID) != XST_SUCCESS)                        
+    //     error_handler("Failed to connect VDMA interrupt");
+    cam.start_streaming();
+    // gic.enableInterrupts();
+
+    xil_printf("INFO [kv260_ov9281_app] VDMA initialized with interrupts\r\n");
+    xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
+
+    usleep(1000000);
+
     xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
 
-    // Xil_DCacheInvalidateRange((UINTPTR)frame_buffer, INTPTR(FB_SIZE_BYTES));
-    // Xil_DCacheDisable();  // disables + flushes first
     while(1){
-        // for(u32 i = 0; i < 1000000; i++);
-        // vdma.resetWrite();
-        // if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
-        // vdma.enableWrite();
-        vdma.printWriteStatus();
-        xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0]: 0x%x\r\n", frame_buffer[0][0][0]);
+        Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
+
+        xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n", 
+            frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
+            frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
+        );
         usleep(1000000);
     }
     return 0;

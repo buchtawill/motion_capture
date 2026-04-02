@@ -26,11 +26,9 @@ set(USER_UNDEFINED_SYMBOLS
 # Example 3: Adding ${CMAKE_SOURCE_DIR}/data/include to add data/include from this project.
 
 set(USER_INCLUDE_DIRECTORIES
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/cam
     ${CMAKE_SOURCE_DIR}/hdmi
-    ${CMAKE_SOURCE_DIR}/platform
-    ${CMAKE_SOURCE_DIR}/../../zybo_ov9281_platform/export/zybo_ov9281_platform/hw/sdt/drivers/MIPI_D_PHY_RX_v1_0/src
-    ${CMAKE_SOURCE_DIR}/../../zybo_ov9281_platform/export/zybo_ov9281_platform/hw/sdt/drivers/MIPI_CSI_2_RX_v1_0/src
 )
 
 # -----------------------------------------
