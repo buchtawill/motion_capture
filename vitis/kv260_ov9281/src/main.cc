@@ -45,16 +45,36 @@ static int init_iic_routing(PL_IIC& iic);
  */
 static int init_csi_subsystem();
 
-// float get_fps(){
-//     Xil_Out32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x00, 0x01);
+// TODO: Fix this method it's broken
+float print_fps(){
+    // Reset
+    Xil_Out32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x00, 0x02);
 
-//     u32 status = Xil_In32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x04);
-//     u32 cycle_count = Xil_In32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x08);
-//     xil_printf("INFO [kv260_ov9281_app] Status: 0x%08x    Cycle Count: 0x%08x \r\n", status, cycle_count);
-// }
+    // Enable
+    Xil_Out32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x00, 0x01);
+
+    u32 status = 0;
+    u32 count = 0;
+    u32 max_tries = 4000; // number of milliseconds
+    while((status & 0x4 != 0x4) && count < max_tries){
+        status = Xil_In32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x04);
+        count++;
+        // Sleep 1 millisecond
+        usleep(1000);
+    }
+
+    u32 cycle_count = Xil_In32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x08);
+
+    // Cycles per frame
+    float clk_per_frame = cycle_count / 100;
+    float t_per_frame = clk_per_frame * (1.0f / 200e6);
+    float fps = 1.0f / t_per_frame;
+    u32 fps_int = (u32)fps;
+
+    xil_printf("INFO [kv260_ov9281_app] Measured %u fps \r\n", fps_int);
+}
 
 int main() {
-    Xil_DCacheDisable();
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
 
     // digilent::ScuGicInterruptController gic(IRPT_CTL_DEVID);
@@ -83,6 +103,7 @@ int main() {
     if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
     // if (vdma.connectWriteInterrupt(gic, VDMA_WRITE_INTR_ID) != XST_SUCCESS)                        
     //     error_handler("Failed to connect VDMA interrupt");
+    vdma.enableWrite();
     cam.start_streaming();
     // gic.enableInterrupts();
 
@@ -91,8 +112,8 @@ int main() {
     xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
 
     while(1){
+        // print_fps();
         Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
-
         xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n", 
             frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
             frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
