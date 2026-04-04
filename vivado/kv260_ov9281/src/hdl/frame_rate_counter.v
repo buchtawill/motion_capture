@@ -67,7 +67,8 @@ module frame_rate_counter #(
     // AXI-Stream Slave  (from MIPI CSI2 Rx subsystem)
     // -------------------------------------------------------------------------
     input  wire [AXIS_DATA_WIDTH-1:0]     s_axis_tdata,
-    input  wire [AXIS_TKEEP_WIDTH-1:0]    s_axis_tkeep,
+    input  wire [9:0]                     s_axis_tdest,
+    // input  wire [AXIS_TKEEP_WIDTH-1:0]    s_axis_tkeep, // Not present from CSI2 RX subsystem
     input  wire [AXIS_TUSER_WIDTH-1:0]    s_axis_tuser,
     input  wire                           s_axis_tlast,
     input  wire                           s_axis_tvalid,
@@ -88,7 +89,8 @@ module frame_rate_counter #(
     // AXI-Stream passthrough (pure wire — zero latency, zero backpressure)
     // =========================================================================
     assign m_axis_tdata  = s_axis_tdata;
-    assign m_axis_tkeep  = s_axis_tkeep;
+    // assign m_axis_tkeep  = s_axis_tkeep;
+    assign m_axis_tkeep  = 4'hF;
     assign m_axis_tuser  = s_axis_tuser;
     assign m_axis_tlast  = s_axis_tlast;
     assign m_axis_tvalid = s_axis_tvalid;
@@ -104,8 +106,8 @@ module frame_rate_counter #(
     // =========================================================================
     // Control register fields
     // =========================================================================
-    reg  reg_enable;    // bit 0 of control register
-    // sw_reset (bit 1) is write-only / self-clearing — no storage needed
+    reg  reg_enable;     // bit 0 of control register
+    reg  sw_reset_latch; // one-cycle pulse set by AXI write block, read by state machine
 
     // =========================================================================
     // Measurement state machine
@@ -125,12 +127,11 @@ module frame_rate_counter #(
     wire sof_strobe = s_axis_tvalid & m_axis_tready & s_axis_tuser[0];
 
     always @(posedge aclk) begin
-        if (!aresetn) begin
+        if (!aresetn || sw_reset_latch) begin
             state           <= S_IDLE;
             cycle_counter   <= 32'd0;
             frame_counter   <= 7'd0;
             reg_cycle_count <= 32'd0;
-            reg_enable      <= 1'b0;
         end else begin
             case (state)
                 // ----------------------------------------------------------
@@ -210,8 +211,11 @@ module frame_rate_counter #(
             aw_addr_lat   <= 4'd0;
             w_data_lat    <= 32'd0;
             w_strb_lat    <= 4'd0;
-            reg_enable    <= 1'b0;
+            reg_enable     <= 1'b0;
+            sw_reset_latch <= 1'b0;
         end else begin
+            sw_reset_latch <= 1'b0; // default; overridden below when sw_reset written
+
             // Accept write address
             if (s_axi_awvalid && s_axi_awready) begin
                 aw_addr_lat   <= s_axi_awaddr;
@@ -249,13 +253,11 @@ module frame_rate_counter #(
                 // Status and CycleCount are read-only; writes are silently ignored
             end
 
-            // sw_reset: force state machine back to IDLE
-            // Detected when we finish processing a write to CTRL with bit 1 set
+            // sw_reset: pulse latch for one cycle so the state machine block
+            // (the sole owner of state/counters) can reset itself cleanly.
             if (aw_active && w_active && !s_axi_bvalid &&
                 (aw_addr_lat == ADDR_CTRL) && w_strb_lat[0] && w_data_lat[1]) begin
-                state         <= S_IDLE;
-                cycle_counter <= 32'd0;
-                frame_counter <= 7'd0;
+                sw_reset_latch <= 1'b1;
             end
 
             // Deassert bvalid after handshake

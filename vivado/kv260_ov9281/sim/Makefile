@@ -3,7 +3,7 @@ SNAPSHOT := tb_sim
 TOP      := tb_frame_rate
 
 SRCS := \
-	$(HDL_DIR)/frame_rate_counter.sv \
+	$(HDL_DIR)/frame_rate_counter.v \
 	$(HDL_DIR)/tb_frame_rate.sv
 
 .PHONY: all compile run clean
