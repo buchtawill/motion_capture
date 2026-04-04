@@ -45,7 +45,16 @@ static int init_iic_routing(PL_IIC& iic);
  */
 static int init_csi_subsystem();
 
+// float get_fps(){
+//     Xil_Out32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x00, 0x01);
+
+//     u32 status = Xil_In32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x04);
+//     u32 cycle_count = Xil_In32(XPAR_FRAME_RATE_COUNTER_0_BASEADDR + 0x08);
+//     xil_printf("INFO [kv260_ov9281_app] Status: 0x%08x    Cycle Count: 0x%08x \r\n", status, cycle_count);
+// }
+
 int main() {
+    Xil_DCacheDisable();
     xil_printf("INFO [kv260_ov9281_app] KV260 OV9281 init program\r\n");
 
     // digilent::ScuGicInterruptController gic(IRPT_CTL_DEVID);
@@ -69,7 +78,6 @@ int main() {
 
     // Initialize VDMA
     AXI_VDMA vdma(VDMA_DEVID, (UINTPTR)frame_buffer);
-    vdma.printWriteStatus();
     if(vdma.init() != XST_SUCCESS) error_handler("Failed to init vdma");
     vdma.resetWrite();
     if(vdma.configureWrite(1280, 800) != XST_SUCCESS) error_handler("Failed to configure 1280x800 vdma");
@@ -80,9 +88,6 @@ int main() {
 
     xil_printf("INFO [kv260_ov9281_app] VDMA initialized with interrupts\r\n");
     xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
-
-    usleep(1000000);
-
     xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
 
     while(1){
