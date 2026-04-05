@@ -1,58 +1,63 @@
 // isp_regs.rdl
 // OV9281 ISP Statistics and Control Registers
-
+//
 // 0x00: Control (WO)
-//  - Bit 0 - Reset: 
-//     - Writing 1 = SW reset
-//  - Bit 1 - Start: 
-//     - Writing 1 will start measurement
-//     - Measurements will wait until the next t_user strobe to start. This write enables the state machine
-//  - Bit 2 - Snapshot
-//     - Writing 1 will snapshot cycle counter and frame counter into their own registers to allow for multi-cycle reads 
+//  - Bit 0 - Reset:               Writing 1 = SW reset (auto-clears)
+//  - Bit 1 - Start:               Writing 1 starts measurement (auto-clears)
+//  - Bit 2 - Snapshot:            Writing 1 snapshots cycle/frame counters (auto-clears)
+//  - Bit 3 - HIST_ADDR_AUTOINC:   Auto-increment HIST_ADDR on HIST_DATA access. Default 1.
 // 0x04: Status (RO)
-//  - Bit 0: Busy bit. 1 when measurement in progress, 0 when idle.
-//  - Bit 1: Data ready bit: New data is ready. Clears when start is written
+//  - Bit 0: Busy. 1 when measurement in progress.
+//  - Bit 1: Data ready. New data available. Clears when START is written.
 // 0x08: Horizontal resolution (R/W)
 // 0x0C: Vertical resolution (R/W)
 // 0x10: Cycle counter low (RO)
-// 0x14: cycle counter high (RO)
-// 0x18: cycle counter snapshot low (RO)
-// 0x1c: cycle counter snapshot high (RO)
+// 0x14: Cycle counter high (RO)
+// 0x18: Cycle counter snapshot low (RO)
+// 0x1C: Cycle counter snapshot high (RO)
 // 0x20: Frame counter (RO)
 // 0x24: Frame counter snapshot (RO)
-// 0x28: Average pixel value measurement from last frame (RO)
-// 0x2C: Reserved
-// 0x30-0x42c: Histogram bin registers (RO)
+// 0x28: Average pixel value from last frame (RO)
+// 0x2C: Histogram bin address (R/W)
+// 0x30: Histogram bin data (R/W) — indirect access to BRAM via HIST_ADDR
 
 
 addrmap isp_regs {
     desc = "OV9281 ISP AXI4-Lite Register Map";
 
     // =========================================================
-    // 0x00: Control Register (WO)
+    // 0x00: Control Register (mixed: bits 0-2 auto-clear, bit 3 sticky)
     // =========================================================
     reg ctrl_reg {
-        desc = "ISP Control Register. All bits are write-1-to-trigger
-                and auto-clear. Reading this register returns 0.";
+        desc = "ISP Control Register.";
 
-        default hw = r;
-        default sw = w;
-        default singlepulse;    // auto-clear on write (pulse behavior)
+        // Bits 0-2: write-only, auto-clear (singlepulse)
+        field {
+            hw = r; sw = w;
+            singlepulse;
+        } RESET[1] = 0;
+        // Bit 0: Software reset. Clears all counters and state machines.
 
-        field {} RESET[1] = 0;
-        // Bit 0: Software reset. Resets all counters and state machines.
-        // Writing 1 clears cycle counter, frame counter, and returns
-        // the state machine to idle.
+        field {
+            hw = r; sw = w;
+            singlepulse;
+        } START[1] = 0;
+        // Bit 1: Start measurement. Waits for next TUSER strobe.
+        // Also clears DATA_READY.
 
-        field {} START[1] = 0;
-        // Bit 1: Start measurement. State machine will wait for the
-        // next t_user strobe before beginning to accumulate stats.
-        // Also clears the DATA_READY status bit.
+        field {
+            hw = r; sw = w;
+            singlepulse;
+        } SNAPSHOT[1] = 0;
+        // Bit 2: Snapshot. Latches cycle and frame counters into snapshot registers.
 
-        field {} SNAPSHOT[1] = 0;
-        // Bit 2: Snapshot. Latches the current cycle counter and frame
-        // counter values into their respective snapshot registers for
-        // safe multi-cycle reads by software.
+        // Bit 3: sticky R/W control — not a pulse
+        field {
+            hw = r; sw = rw;
+        } HIST_ADDR_AUTOINC[1] = 1;
+        // Bit 3: When 1, HIST_ADDR auto-increments after each HIST_DATA access.
+        // Implemented in RTL (isp_math_top), not in the register block itself.
+        // Defaults to 1.
     };
 
     // =========================================================
@@ -65,56 +70,45 @@ addrmap isp_regs {
         default sw = r;
 
         field {} BUSY[1] = 0;
-        // Bit 0: Busy. Set by HW when a measurement is in progress
-        // (t_user strobe seen, frame not yet complete).
-        // Cleared by HW when the frame measurement completes.
+        // Bit 0: Set when measurement is in progress.
 
         field {} DATA_READY[1] = 0;
-        // Bit 1: Data Ready. Set by HW when a frame measurement has
-        // completed and new stats are available in the stat registers.
-        // Cleared when SW writes 1 to CTRL.START.
+        // Bit 1: Set when a frame measurement has completed.
+        // Cleared when SW writes CTRL.START.
     };
 
     // =========================================================
     // 0x08: Horizontal Resolution (R/W)
     // =========================================================
     reg hres_reg {
-        desc = "Horizontal resolution in pixels. Written by SW to tell
-                the hardware when a line ends. Must be configured before
-                writing CTRL.START. e.g. 1280 for OV9281.";
+        desc = "Horizontal resolution in pixels (e.g. 1280 for OV9281).
+                Must be set before writing CTRL.START.";
 
         default hw = r;
         default sw = rw;
 
         field {} HRES[16] = 16'd1280;
-        // Bits 15:0 — horizontal pixel count per line.
-        // Upper 16 bits reserved.
     };
 
     // =========================================================
     // 0x0C: Vertical Resolution (R/W)
     // =========================================================
     reg vres_reg {
-        desc = "Vertical resolution in lines. Written by SW to tell
-                the hardware when a frame ends. Must be configured before
-                writing CTRL.START. e.g. 800 for OV9281.";
+        desc = "Vertical resolution in lines (e.g. 800 for OV9281).
+                Must be set before writing CTRL.START.";
 
         default hw = r;
         default sw = rw;
 
         field {} VRES[16] = 16'd800;
-        // Bits 15:0 — vertical line count per frame.
-        // Upper 16 bits reserved.
     };
 
     // =========================================================
     // 0x10: Cycle Counter Low (RO)
     // =========================================================
     reg cycle_cnt_lo_reg {
-        desc = "Lower 32 bits of the free-running cycle counter.
-                Counts clock cycles since last SW reset.
-                Read SNAPSHOT first to freeze both halves
-                before reading for a coherent 64-bit value.";
+        desc = "Lower 32 bits of free-running cycle counter.
+                Write CTRL.SNAPSHOT before reading for a coherent 64-bit value.";
 
         default hw = rw;
         default sw = r;
@@ -126,8 +120,7 @@ addrmap isp_regs {
     // 0x14: Cycle Counter High (RO)
     // =========================================================
     reg cycle_cnt_hi_reg {
-        desc = "Upper 32 bits of the free-running cycle counter.
-                See CYCLE_CNT_LO for usage notes.";
+        desc = "Upper 32 bits of free-running cycle counter.";
 
         default hw = rw;
         default sw = r;
@@ -139,9 +132,8 @@ addrmap isp_regs {
     // 0x18: Cycle Counter Snapshot Low (RO)
     // =========================================================
     reg cycle_snap_lo_reg {
-        desc = "Lower 32 bits of the cycle counter snapshot.
-                Updated when SW writes 1 to CTRL.SNAPSHOT.
-                Safe to read without re-snapshotting.";
+        desc = "Lower 32 bits of cycle counter snapshot.
+                Updated when SW writes CTRL.SNAPSHOT.";
 
         default hw = rw;
         default sw = r;
@@ -153,8 +145,7 @@ addrmap isp_regs {
     // 0x1C: Cycle Counter Snapshot High (RO)
     // =========================================================
     reg cycle_snap_hi_reg {
-        desc = "Upper 32 bits of the cycle counter snapshot.
-                Updated when SW writes 1 to CTRL.SNAPSHOT.";
+        desc = "Upper 32 bits of cycle counter snapshot.";
 
         default hw = rw;
         default sw = r;
@@ -166,10 +157,8 @@ addrmap isp_regs {
     // 0x20: Frame Counter (RO)
     // =========================================================
     reg frame_cnt_reg {
-        desc = "Monotonic frame counter. Increments on each completed
-                frame measurement. Reset to 0 by CTRL.RESET.
-                Read SNAPSHOT first for a coherent read alongside
-                the cycle counter.";
+        desc = "Monotonic frame counter. Increments on each completed frame.
+                Reset by CTRL.RESET. Read CTRL.SNAPSHOT first for coherent read.";
 
         default hw = rw;
         default sw = r;
@@ -181,8 +170,8 @@ addrmap isp_regs {
     // 0x24: Frame Counter Snapshot (RO)
     // =========================================================
     reg frame_snap_reg {
-        desc = "Snapshot of the frame counter at the time SW wrote
-                CTRL.SNAPSHOT. Coherent with CYCLE_SNAP_LO/HI.";
+        desc = "Snapshot of frame counter at the time CTRL.SNAPSHOT was written.
+                Coherent with CYCLE_SNAP_LO/HI.";
 
         default hw = rw;
         default sw = r;
@@ -195,44 +184,44 @@ addrmap isp_regs {
     // =========================================================
     reg avg_pixel_reg {
         desc = "Mean pixel brightness from the last completed frame.
-                Computed as sum(all pixels) / (HRES * VRES).
-                Value is in range 0-255. Updated when DATA_READY
-                is set.";
+                Computed as sum(pixels) / (HRES * VRES). Range 0-255.
+                Updated when DATA_READY is set.";
 
         default hw = rw;
         default sw = r;
 
         field {} AVG_PIXEL[8] = 0;
-        // Bits 7:0 — mean brightness. Bits 31:8 reserved.
     };
 
     // =========================================================
-    // 0x2C: Reserved
+    // 0x2C: Histogram Bin Address (R/W)
     // =========================================================
-    reg reserved_2c_reg {
-        desc = "Reserved. Do not use.";
-
-        default hw = r;
-        default sw = r;
-
-        field {} RESERVED[32] = 0;
-    };
-
-    // =========================================================
-    // 0x30 - 0x42C: Histogram Bins 0-255 (RO)
-    // =========================================================
-    reg hist_bin_reg {
-        desc = "Histogram bin. Each register holds the pixel count
-                for one 8-bit intensity value (0-255).
-                Max value is HRES * VRES = 1,024,000 (0x000F4240),
-                which fits in 20 bits. Full 32 bits provided.
-                All bins are updated atomically when DATA_READY
-                is set.";
+    reg hist_addr_reg {
+        desc = "Index (0-255) of the histogram bin to read or write via HIST_DATA.
+                If CTRL.HIST_ADDR_AUTOINC=1, hardware increments this register
+                after each HIST_DATA access. Wraps at 255.";
 
         default hw = rw;
-        default sw = r;
+        default sw = rw;
 
-        field {} BIN_COUNT[32] = 0;
+        field {} HIST_ADDR[8] = 0;
+        // Bits 7:0 — bin index. Bits 31:8 reserved.
+    };
+
+    // =========================================================
+    // 0x30: Histogram Bin Data (R/W)
+    // =========================================================
+    reg hist_data_reg {
+        desc = "Data register for indirect BRAM histogram access.
+                Read: returns pixel count for bin at HIST_ADDR (BRAM output).
+                Write: stores value into BRAM at HIST_ADDR.
+                Hardware drives this register with BRAM read data each cycle.
+                Auto-increment of HIST_ADDR (if enabled) is handled in RTL.";
+
+        default hw = rw;
+        default sw = rw;
+
+        field {} HIST_DATA[32] = 0;
     };
 
     // =========================================================
@@ -249,8 +238,6 @@ addrmap isp_regs {
     frame_cnt_reg     FRAME_CNT     @ 0x020;
     frame_snap_reg    FRAME_SNAP    @ 0x024;
     avg_pixel_reg     AVG_PIXEL     @ 0x028;
-    reserved_2c_reg   RESERVED_2C   @ 0x02C;
-
-    // 256 histogram bins at 0x030-0x42C, 4 bytes each
-    hist_bin_reg      HIST[256]     @ 0x030;
+    hist_addr_reg     HIST_ADDR     @ 0x02C;
+    hist_data_reg     HIST_DATA     @ 0x030;
 };

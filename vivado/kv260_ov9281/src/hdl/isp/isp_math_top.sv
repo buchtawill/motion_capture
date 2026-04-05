@@ -79,11 +79,6 @@ module isp_wrapper #(
 );
 
     // =========================================================================
-    // Reset polarity conversion  (IP Integrator: active-low → isp_regs: active-high)
-    // =========================================================================
-    wire rst = ~aresetn;
-
-    // =========================================================================
     // AXI-Stream passthrough  (pure wire — zero latency, zero backpressure)
     // =========================================================================
     assign m_axis_tdata  = s_axis_tdata;
@@ -97,19 +92,69 @@ module isp_wrapper #(
     // Hardware interface structs
     // TODO: connect hwif_in fields from stats_engine once written.
     // =========================================================================
-    isp_regs__in_t  hwif_in;
-    isp_regs__out_t hwif_out;
+    isp_regs__in_t  hwif_in;  // RTL  --> regs
+    isp_regs__out_t hwif_out; // regs --> RTL
 
-    // always_comb begin
-    //     hwif_in = '0;
-    // end
+
+    // =========================================================================
+    // Reset polarity conversion  (active-low aresetn -> active-high rst)
+    // =========================================================================
+    wire rst = ~aresetn;
+
+    // =========================================================================
+    // Main combinational register value block
+    // =========================================================================
+    always_comb begin
+        // ------------------------------------------------------------------
+        // Defaults - must assign every field individually because
+        // isp_regs__in_t contains an unpacked array (HIST[256])
+        // ------------------------------------------------------------------
+        // Status (driven by stats_engine - 0 until wired up)
+        hwif_in.STATUS.BUSY.next              = 1'b0;
+        hwif_in.STATUS.DATA_READY.next        = 1'b0;
+
+        // Snapshot registers - latch value when CTRL.SNAPSHOT pulses
+        hwif_in.CYCLE_SNAP_LO.CYCLE_SNAP_LO.next = hwif_out.CTRL.SNAPSHOT.value ? 
+                hwif_out.CYCLE_CNT_LO.CYCLE_CNT_LO.value : hwif_out.CYCLE_SNAP_LO.CYCLE_SNAP_LO.value;
+        hwif_in.CYCLE_SNAP_HI.CYCLE_SNAP_HI.next = hwif_out.CTRL.SNAPSHOT.value ? 
+                hwif_out.CYCLE_CNT_HI.CYCLE_CNT_HI.value : hwif_out.CYCLE_SNAP_HI.CYCLE_SNAP_HI.value;
+        hwif_in.FRAME_SNAP.FRAME_SNAP.next       = hwif_out.CTRL.SNAPSHOT.value ?
+                hwif_out.FRAME_CNT.FRAME_CNT.value : hwif_out.FRAME_SNAP.FRAME_SNAP.value;
+
+        // Cycle counter - free-running increment every clock
+        hwif_in.CYCLE_CNT_LO.CYCLE_CNT_LO.next = hwif_out.CYCLE_CNT_LO.CYCLE_CNT_LO.value + 1;
+        hwif_in.CYCLE_CNT_HI.CYCLE_CNT_HI.next = hwif_out.CYCLE_CNT_HI.CYCLE_CNT_HI.value
+                                                + (hwif_out.CYCLE_CNT_LO.CYCLE_CNT_LO.value == 32'hFFFFFFFF ? 1 : 0);
+
+        // Frame counter (placeholder until stats_engine is wired)
+        hwif_in.FRAME_CNT.FRAME_CNT.next = 32'h0;
+
+        // Average pixel (driven by stats_engine - 0 until wired up)
+        hwif_in.AVG_PIXEL.AVG_PIXEL.next = 8'h0;
+
+        // Histogram bins (driven by stats_engine - 0 until wired up)
+        for (int i = 0; i < 256; i++) begin
+            hwif_in.HIST[i].BIN_COUNT.next = 32'h0;
+        end
+
+        // Software reset of counter registers
+        if(hwif_out.CTRL.RESET.value) begin
+            hwif_in.CYCLE_SNAP_LO.CYCLE_SNAP_LO.next = 32'h0;
+            hwif_in.CYCLE_SNAP_HI.CYCLE_SNAP_HI.next = 32'h0
+            hwif_in.FRAME_SNAP.FRAME_SNAP.next       = 32'h0;
+            hwif_in.CYCLE_CNT_LO.CYCLE_CNT_LO.next   = 32'h0;
+            hwif_in.CYCLE_CNT_HI.CYCLE_CNT_HI.next   = 32'h0;
+        end
+    end
+
+
 
     // =========================================================================
     // Register block
     // =========================================================================
     isp_regs u_isp_regs (
         .clk              (aclk),
-        .rst              (rst),
+        .rst_n            (aresetn),
 
         // AXI4-Lite
         .s_axil_awaddr    (s_axi_awaddr),

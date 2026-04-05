@@ -27,6 +27,7 @@ module tb_isp_math;
     // =========================================================================
     localparam logic [10:0] ADDR_HRES = 11'h008;
     localparam logic [10:0] ADDR_VRES = 11'h00C;
+    localparam logic [10:0] ADDR_FCNT = 11'h020;
 
     // =========================================================================
     // AXI-Lite signals
@@ -170,6 +171,15 @@ module tb_isp_math;
         assert (rdata[15:0] == 16'h320)
             else $error("[FAIL] VRES: expected 0x0320 (800), got 0x%04h", rdata[15:0]);
         $display("[PASS] VRES reset value correct (800)");
+
+        // ------------------------------------------------------------------
+        // Test 3: ADDR_FCNT test --> 0x00c0ffee
+        // ------------------------------------------------------------------
+        axi_read(ADDR_FCNT, rdata);
+        $display("[READ] FCNT (0x020) = 0x%08h  (bits[31:0] = %0d)", rdata, rdata[31:0]);
+        assert (rdata[31:0] == 32'h00c0ffee)
+            else $error("[FAIL] VRES: expected 0x00c0ffee, got 0x%08h", rdata[31:0]);
+        $display("[PASS] VRES reset value correct (0x00c0ffee)");
 
         // ------------------------------------------------------------------
         $display("\n[DONE] All register connectivity checks passed");
