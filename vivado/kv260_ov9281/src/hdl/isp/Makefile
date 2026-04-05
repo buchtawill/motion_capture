@@ -12,12 +12,13 @@
 #   make clean    - remove all generated outputs
 # =============================================================
 
-RDL_FILE    := rdl/isp_regs.rdl
+RDL_FILE    := ./isp_regs.rdl
 TOP         := isp_regs
 
-RTL_DIR     := rdl/rtl
-SW_DIR      := rdl/sw
-HTML_DIR    := rdl/html
+OUT_DIR     := ./rdl_out
+RTL_DIR     := $(OUT_DIR)/rtl
+SW_DIR      := $(OUT_DIR)/sw
+HTML_DIR    := $(OUT_DIR)/html
 
 PEAKRDL     := peakrdl
 
@@ -40,7 +41,7 @@ rtl: $(RTL_DIR)/$(TOP).sv
 
 $(RTL_DIR)/$(TOP).sv: $(RDL_FILE)
 	@mkdir -p $(RTL_DIR)
-	$(PEAKRDL) regblock $< -o $(RTL_DIR) --top $(TOP)
+	$(PEAKRDL) regblock $< -o $(RTL_DIR) --top $(TOP) --cpuif axi4-lite-flat
 	@echo "RTL generated in $(RTL_DIR)/"
 
 # =============================================================
@@ -91,5 +92,5 @@ lint: $(RTL_DIR)/$(TOP).sv
 # =============================================================
 .PHONY: clean
 clean:
-	rm -rf rdl/rtl rdl/sw
+	rm -rf $(OUT_DIR)
 	@echo "Cleaned all generated outputs"
