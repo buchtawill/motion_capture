@@ -37,9 +37,9 @@ proc checkRequiredFiles { origin_dir} {
   set status true
   set files [list \
  "[file normalize "$origin_dir/src/bd/system.tcl"]"\
- "[file normalize "$origin_dir/src/hdl/concat_signals.v"]"\
- "[file normalize "$origin_dir/src/hdl/tb_frame_rate.sv"]"\
- "[file normalize "$origin_dir/src/hdl/frame_rate_counter.v"]"\
+ "[file normalize "$origin_dir/src/sim/tb_frame_rate.sv"]"\
+ "[file normalize "$origin_dir/src/hdl/isp/isp_top.sv"]"\
+ "[file normalize "$origin_dir/src/hdl/isp/isp_wrapper.v"]"\
  "[file normalize "$origin_dir/src/hdl/concat_signals.v"]"\
  "[file normalize "$origin_dir/src/constraints/timing.xdc"]"\
   ]
@@ -163,8 +163,8 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
 set files [list \
- [file normalize "${origin_dir}/src/hdl/concat_signals.v"] \
- [file normalize "$origin_dir/src/hdl/frame_rate_counter.v"]\
+  [file normalize "$origin_dir/src/hdl/isp/isp_top.sv"]\
+  [file normalize "$origin_dir/src/hdl/isp/isp_wrapper.v"]\
 ] 
 add_files -norecurse -fileset $obj $files
 

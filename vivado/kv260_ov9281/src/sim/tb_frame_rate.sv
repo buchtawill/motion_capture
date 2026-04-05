@@ -1,8 +1,8 @@
 // tb_frame_rate.sv
-// Testbench for frame_rate_counter.sv
+// Testbench for isp_wrapper.v (wraps frame_rate_counter.sv)
 //
 // Topology
-//   stream_source ──► frame_rate_counter (DUT) ──► m_axis_tready (tied high)
+//   stream_source ──► isp_wrapper (DUT) ──► m_axis_tready (tied high)
 //
 // Clock      : 200 MHz  (5 ns period)
 // Backpressure: none  — m_axis_tready is permanently asserted
@@ -76,7 +76,8 @@ module tb_frame_rate #(
 
     // ── AXI-Stream slave (driven by stream source process) ───────────────────
     logic [31:0] s_axis_tdata  = '0;
-    logic [3:0]  s_axis_tkeep  = 4'hF;
+    logic [9:0]  s_axis_tdest  = '0;    // tied low — not used by frame_rate_counter
+    logic [3:0]  s_axis_tkeep  = 4'hF; // not wired to DUT (CSI2 Rx omits tkeep)
     logic        s_axis_tuser  = 1'b0;
     logic        s_axis_tlast  = 1'b0;
     logic        s_axis_tvalid = 1'b0;
@@ -93,7 +94,7 @@ module tb_frame_rate #(
     // =========================================================================
     // DUT instantiation
     // =========================================================================
-    frame_rate_counter #(
+    isp_wrapper #(
         .AXIS_DATA_WIDTH  (32),
         .AXIS_TUSER_WIDTH (1),
         .AXIS_TKEEP_WIDTH (4)
@@ -118,9 +119,9 @@ module tb_frame_rate #(
         .s_axi_rresp    (s_axi_rresp),
         .s_axi_rvalid   (s_axi_rvalid),
         .s_axi_rready   (s_axi_rready),
-        // AXI-Stream slave
+        // AXI-Stream slave (tkeep not present on this port — CSI2 Rx omits it)
         .s_axis_tdata   (s_axis_tdata),
-        .s_axis_tkeep   (s_axis_tkeep),
+        .s_axis_tdest   (s_axis_tdest),
         .s_axis_tuser   (s_axis_tuser),
         .s_axis_tlast   (s_axis_tlast),
         .s_axis_tvalid  (s_axis_tvalid),
@@ -286,7 +287,7 @@ module tb_frame_rate #(
         real         measured_fps;
 
         $display("========================================================");
-        $display("  frame_rate_counter testbench");
+        $display("  isp_wrapper / frame_rate_counter testbench");
         $display("  CLK  = %0d MHz", CLK_FREQ_HZ / 1_000_000);
         $display("  FPS  = %0d", FRAME_RATE_FPS);
         $display("  CPF  = %0d cycles/frame", CYCLES_PER_FRAME);
