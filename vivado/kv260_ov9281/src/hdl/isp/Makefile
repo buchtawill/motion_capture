@@ -42,6 +42,10 @@ rtl: $(RTL_DIR)/$(TOP).sv
 $(RTL_DIR)/$(TOP).sv: $(RDL_FILE)
 	@mkdir -p $(RTL_DIR)
 	$(PEAKRDL) regblock $< -o $(RTL_DIR) --top $(TOP) --cpuif axi4-lite-flat
+	@# Prepend timescale to all generated SV files
+	@for f in $(RTL_DIR)/*.sv; do \
+		sed -i '1s/^/`timescale 1ns\/1ps\n/' $$f; \
+	done
 	@echo "RTL generated in $(RTL_DIR)/"
 
 # =============================================================
