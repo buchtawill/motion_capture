@@ -1,0 +1,256 @@
+// isp_regs.rdl
+// OV9281 ISP Statistics and Control Registers
+
+// 0x00: Control (WO)
+//  - Bit 0 - Reset: 
+//     - Writing 1 = SW reset
+//  - Bit 1 - Start: 
+//     - Writing 1 will start measurement
+//     - Measurements will wait until the next t_user strobe to start. This write enables the state machine
+//  - Bit 2 - Snapshot
+//     - Writing 1 will snapshot cycle counter and frame counter into their own registers to allow for multi-cycle reads 
+// 0x04: Status (RO)
+//  - Bit 0: Busy bit. 1 when measurement in progress, 0 when idle.
+//  - Bit 1: Data ready bit: New data is ready. Clears when start is written
+// 0x08: Horizontal resolution (R/W)
+// 0x0C: Vertical resolution (R/W)
+// 0x10: Cycle counter low (RO)
+// 0x14: cycle counter high (RO)
+// 0x18: cycle counter snapshot low (RO)
+// 0x1c: cycle counter snapshot high (RO)
+// 0x20: Frame counter (RO)
+// 0x24: Frame counter snapshot (RO)
+// 0x28: Average pixel value measurement from last frame (RO)
+// 0x2C: Reserved
+// 0x30-0x42c: Histogram bin registers (RO)
+
+
+addrmap isp_regs {
+    desc = "OV9281 ISP AXI4-Lite Register Map";
+
+    // =========================================================
+    // 0x00: Control Register (WO)
+    // =========================================================
+    reg ctrl_reg {
+        desc = "ISP Control Register. All bits are write-1-to-trigger
+                and auto-clear. Reading this register returns 0.";
+
+        default hw = r;
+        default sw = w;
+        default singlepulse;    // auto-clear on write (pulse behavior)
+
+        field {} RESET[1] = 0;
+        // Bit 0: Software reset. Resets all counters and state machines.
+        // Writing 1 clears cycle counter, frame counter, and returns
+        // the state machine to idle.
+
+        field {} START[1] = 0;
+        // Bit 1: Start measurement. State machine will wait for the
+        // next t_user strobe before beginning to accumulate stats.
+        // Also clears the DATA_READY status bit.
+
+        field {} SNAPSHOT[1] = 0;
+        // Bit 2: Snapshot. Latches the current cycle counter and frame
+        // counter values into their respective snapshot registers for
+        // safe multi-cycle reads by software.
+    };
+
+    // =========================================================
+    // 0x04: Status Register (RO)
+    // =========================================================
+    reg status_reg {
+        desc = "ISP Status Register. Read-only, driven by hardware.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} BUSY[1] = 0;
+        // Bit 0: Busy. Set by HW when a measurement is in progress
+        // (t_user strobe seen, frame not yet complete).
+        // Cleared by HW when the frame measurement completes.
+
+        field {} DATA_READY[1] = 0;
+        // Bit 1: Data Ready. Set by HW when a frame measurement has
+        // completed and new stats are available in the stat registers.
+        // Cleared when SW writes 1 to CTRL.START.
+    };
+
+    // =========================================================
+    // 0x08: Horizontal Resolution (R/W)
+    // =========================================================
+    reg hres_reg {
+        desc = "Horizontal resolution in pixels. Written by SW to tell
+                the hardware when a line ends. Must be configured before
+                writing CTRL.START. e.g. 1280 for OV9281.";
+
+        default hw = r;
+        default sw = rw;
+
+        field {} HRES[16] = 16'd1280;
+        // Bits 15:0 — horizontal pixel count per line.
+        // Upper 16 bits reserved.
+    };
+
+    // =========================================================
+    // 0x0C: Vertical Resolution (R/W)
+    // =========================================================
+    reg vres_reg {
+        desc = "Vertical resolution in lines. Written by SW to tell
+                the hardware when a frame ends. Must be configured before
+                writing CTRL.START. e.g. 800 for OV9281.";
+
+        default hw = r;
+        default sw = rw;
+
+        field {} VRES[16] = 16'd800;
+        // Bits 15:0 — vertical line count per frame.
+        // Upper 16 bits reserved.
+    };
+
+    // =========================================================
+    // 0x10: Cycle Counter Low (RO)
+    // =========================================================
+    reg cycle_cnt_lo_reg {
+        desc = "Lower 32 bits of the free-running cycle counter.
+                Counts clock cycles since last SW reset.
+                Read SNAPSHOT first to freeze both halves
+                before reading for a coherent 64-bit value.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} CYCLE_CNT_LO[32] = 0;
+    };
+
+    // =========================================================
+    // 0x14: Cycle Counter High (RO)
+    // =========================================================
+    reg cycle_cnt_hi_reg {
+        desc = "Upper 32 bits of the free-running cycle counter.
+                See CYCLE_CNT_LO for usage notes.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} CYCLE_CNT_HI[32] = 0;
+    };
+
+    // =========================================================
+    // 0x18: Cycle Counter Snapshot Low (RO)
+    // =========================================================
+    reg cycle_snap_lo_reg {
+        desc = "Lower 32 bits of the cycle counter snapshot.
+                Updated when SW writes 1 to CTRL.SNAPSHOT.
+                Safe to read without re-snapshotting.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} CYCLE_SNAP_LO[32] = 0;
+    };
+
+    // =========================================================
+    // 0x1C: Cycle Counter Snapshot High (RO)
+    // =========================================================
+    reg cycle_snap_hi_reg {
+        desc = "Upper 32 bits of the cycle counter snapshot.
+                Updated when SW writes 1 to CTRL.SNAPSHOT.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} CYCLE_SNAP_HI[32] = 0;
+    };
+
+    // =========================================================
+    // 0x20: Frame Counter (RO)
+    // =========================================================
+    reg frame_cnt_reg {
+        desc = "Monotonic frame counter. Increments on each completed
+                frame measurement. Reset to 0 by CTRL.RESET.
+                Read SNAPSHOT first for a coherent read alongside
+                the cycle counter.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} FRAME_CNT[32] = 0;
+    };
+
+    // =========================================================
+    // 0x24: Frame Counter Snapshot (RO)
+    // =========================================================
+    reg frame_snap_reg {
+        desc = "Snapshot of the frame counter at the time SW wrote
+                CTRL.SNAPSHOT. Coherent with CYCLE_SNAP_LO/HI.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} FRAME_SNAP[32] = 0;
+    };
+
+    // =========================================================
+    // 0x28: Average Pixel Value (RO)
+    // =========================================================
+    reg avg_pixel_reg {
+        desc = "Mean pixel brightness from the last completed frame.
+                Computed as sum(all pixels) / (HRES * VRES).
+                Value is in range 0-255. Updated when DATA_READY
+                is set.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} AVG_PIXEL[8] = 0;
+        // Bits 7:0 — mean brightness. Bits 31:8 reserved.
+    };
+
+    // =========================================================
+    // 0x2C: Reserved
+    // =========================================================
+    reg reserved_2c_reg {
+        desc = "Reserved. Do not use.";
+
+        default hw = r;
+        default sw = r;
+
+        field {} RESERVED[32] = 0;
+    };
+
+    // =========================================================
+    // 0x30 - 0x42C: Histogram Bins 0-255 (RO)
+    // =========================================================
+    reg hist_bin_reg {
+        desc = "Histogram bin. Each register holds the pixel count
+                for one 8-bit intensity value (0-255).
+                Max value is HRES * VRES = 1,024,000 (0x000F4240),
+                which fits in 20 bits. Full 32 bits provided.
+                All bins are updated atomically when DATA_READY
+                is set.";
+
+        default hw = rw;
+        default sw = r;
+
+        field {} BIN_COUNT[32] = 0;
+    };
+
+    // =========================================================
+    // Address Map
+    // =========================================================
+    ctrl_reg          CTRL          @ 0x000;
+    status_reg        STATUS        @ 0x004;
+    hres_reg          HRES          @ 0x008;
+    vres_reg          VRES          @ 0x00C;
+    cycle_cnt_lo_reg  CYCLE_CNT_LO  @ 0x010;
+    cycle_cnt_hi_reg  CYCLE_CNT_HI  @ 0x014;
+    cycle_snap_lo_reg CYCLE_SNAP_LO @ 0x018;
+    cycle_snap_hi_reg CYCLE_SNAP_HI @ 0x01C;
+    frame_cnt_reg     FRAME_CNT     @ 0x020;
+    frame_snap_reg    FRAME_SNAP    @ 0x024;
+    avg_pixel_reg     AVG_PIXEL     @ 0x028;
+    reserved_2c_reg   RESERVED_2C   @ 0x02C;
+
+    // 256 histogram bins at 0x030-0x42C, 4 bytes each
+    hist_bin_reg      HIST[256]     @ 0x030;
+};
