@@ -174,29 +174,33 @@ module tb_stream_fifo;
             pop(rdata);
 
         // ------------------------------------------------------------------
-        // Test 4: simultaneous push+pop when full — count must stay at DEPTH
+        // Test 4: simultaneous push+pop at mid-level — count must stay constant
+        //
+        // When the FIFO is full, s_ready=0 so push is always blocked that cycle;
+        // only pop fires, count drops by 1. To get a true simultaneous push+pop
+        // both handshakes must be able to fire, which requires s_ready=1 (not full).
         // ------------------------------------------------------------------
-        $display("\n--- Test 4: simultaneous push+pop at full ---");
-        for (int i = 0; i < DEPTH; i++)
+        $display("\n--- Test 4: simultaneous push+pop (mid-level) ---");
+        for (int i = 0; i < DEPTH/2; i++)
             push(DATA_WIDTH'(8'hB0 + i));
 
-        // Drive both sides on the same clock edge
+        // Drive both sides on the same clock edge; s_ready=1 so both fire
         @(posedge clk); #1;
         s_valid = 1'b1;
         s_data  = 8'hFF;
         m_ready = 1'b1;
-        @(posedge clk);               // handshake fires
+        @(posedge clk);               // push and pop both handshake
         #1;
         s_valid = 1'b0;
         m_ready = 1'b0;
 
-        // FIFO should still be full (one in, one out)
+        // Count unchanged (DEPTH/2): neither full nor empty
         @(posedge clk); #1;
-        check("s_ready low: still full after push+pop", s_ready, 1'b0);
-        check("m_valid high: still full after push+pop", m_valid, 1'b1);
+        check("s_ready high: not full after push+pop",  s_ready, 1'b1);
+        check("m_valid high: not empty after push+pop", m_valid, 1'b1);
 
-        // Drain
-        for (int i = 0; i < DEPTH; i++)
+        // Drain remaining DEPTH/2 items
+        for (int i = 0; i < DEPTH/2; i++)
             pop(rdata);
 
         // ------------------------------------------------------------------
