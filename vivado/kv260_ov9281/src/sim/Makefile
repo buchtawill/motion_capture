@@ -27,6 +27,10 @@ SRCS_tb_isp_math := \
 	$(HDL_DIR)/isp/isp_math_wrapper.v \
 	$(SIM_DIR)/tb_isp_math.sv
 
+SRCS_tb_stream_fifo := \
+	$(HDL_DIR)/stream_fifo.sv \
+	$(SIM_DIR)/tb_stream_fifo.sv
+
 SRCS := $(SRCS_$(TB))
 
 ifeq ($(SRCS),)
