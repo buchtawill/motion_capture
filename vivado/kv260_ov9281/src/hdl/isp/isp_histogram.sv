@@ -83,6 +83,14 @@ module isp_histogram #(
     // Histogram RAM
     // -------------------------------------------------------------------------
     logic [RAM_WIDTH-1:0] hist_mem[0:255];
+    
+    // Zero every bin at sim time 0 so the RAM does not start with X.
+    // The run-time scrub path (ram_scrub_i) will also zero this array;
+    // that FSM is left as a placeholder for a later pass.
+    initial begin
+        for (int i = 0; i < 256; i++)
+            hist_mem[i] = '0;
+    end
 
     // -------------------------------------------------------------------------
     // Read-side FSM: pop one beat, process each byte in turn
@@ -101,7 +109,7 @@ module isp_histogram #(
     logic [7:0]              pixel_q, pixel_d; // current pixel and previous pixel
     wire                     hazard;
     assign hazard = (pixel_d == pixel_q);
-    assign ram_wr_valid = ((state == S_ACTIVE) && (~hazard));
+    // assign ram_wr_valid = ((state == S_ACTIVE) && (~hazard));
 
     // Pop from FIFO only when idle (about to start a new beat)
     // assign fifo_m_ready = (state == S_IDLE);
@@ -109,7 +117,6 @@ module isp_histogram #(
     // ---- State registers (FF macro) -----------------------------------------
     `FF(state,          next_state,      S_IDLE, clk_i, rst_n)
     `FF(byte_idx_q,     byte_idx_d,      '0,     clk_i, rst_n)
-    `FF(ram_addr_d_q,   ram_addr_d_d,    '0,     clk_i, rst_n)
     `FF(pixel_q,        pixel_d,         '0,     clk_i, rst_n)
     `FF(beat_shift_q,   beat_shift_d,    '0,     clk_i, rst_n)
     `FF(ram_wr_val_q,   ram_wr_val_d,    '0,     clk_i, rst_n)
@@ -134,7 +141,6 @@ module isp_histogram #(
         ram_wr_valid  = 1'b0;
         ram_wr_val_d  = ram_wr_val_q;
         ram_wr_addr   = 8'h0;
-        tmp_cnt_val   = '0;
         
         pixel_d       = pixel_q;
         beat_shift_d  = beat_shift_q;
@@ -158,7 +164,6 @@ module isp_histogram #(
 
             S_ACTIVE: begin
                 beat_shift_d = beat_shift_q >> 8;
-                tmp_cnt_val = ram_rd_val;
 
                 // Next Pixel
                 pixel_d = beat_shift_d[7:0];
@@ -173,6 +178,7 @@ module isp_histogram #(
                     ram_wr_val_d = ram_wr_val_q + 1;                                                     
                 end else begin
                     // ram wr is enabled
+                    ram_wr_valid = 1'b1;
                     ram_wr_val_d = ram_rd_val + 1;
                 end
 
@@ -185,7 +191,6 @@ module isp_histogram #(
                         next_state = S_IDLE;
                     end
                 end
-
             end
 
             default: next_state = S_IDLE;
