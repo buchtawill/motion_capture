@@ -152,21 +152,22 @@ module isp_histogram #(
     // -------------------------------------------------------------------------
     typedef enum logic [1:0] {
         S_IDLE = 2'b00,   // waiting for FIFO data
-        S_ACTIVE
+        S_ACTIVE,
+        S_SCRUB
     } state_t;
 
     state_t                  state,        next_state;
     logic [3:0]              pix_cnt_d,    pix_cnt_q;
-    logic [RAM_WIDTH-1:0]    ram_rd_val,   ram_wr_val_d, ram_wr_val_q, running_cnt_d, running_cnt_q;
+    logic [RAM_WIDTH-1:0]    ram_rd_val,   pix_ram_wr_val_d, ram_wr_val_q, running_cnt_d, running_cnt_q;
     logic [STREAM_WIDTH-1:0] beat_shift_d, beat_shift_q;
     logic [7:0]              ram_wr_addr,  ram_rd_addr;
-    logic                    ram_wr_valid, pixel_d_valid;
+    logic                    ram_pix_wr_valid, pixel_d_valid;
     logic [7:0]              pixel_q, pixel_d; // current pixel and previous pixel
     logic                    hazard, hazard_q;
     assign pixel_d_valid = next_state != S_IDLE;
     assign hazard = pixel_d_valid && (pixel_d == pixel_q) && (running_cnt_d != '0);
-    assign ram_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
-    assign ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
+    assign ram_pix_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
+    assign pix_ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
 
     // Pop from FIFO only when idle (about to start a new beat)
     // assign fifo_m_ready = (state == S_IDLE);
@@ -176,7 +177,7 @@ module isp_histogram #(
     `FF(pix_cnt_q,      pix_cnt_d,       '0,     clk_i, rst_n)
     `FF(pixel_q,        pixel_d,         '0,     clk_i, rst_n)
     `FF(beat_shift_q,   beat_shift_d,    '0,     clk_i, rst_n)
-    `FF(ram_wr_val_q,   ram_wr_val_d,    '0,     clk_i, rst_n)
+    `FF(ram_wr_val_q,   pix_ram_wr_val_d,    '0,     clk_i, rst_n)
     `FF(running_cnt_q,  running_cnt_d,   '0,     clk_i, rst_n)
     `FF(hazard_q,       hazard,          '0,     clk_i, rst_n)
 
@@ -184,11 +185,16 @@ module isp_histogram #(
     always_ff @(posedge clk_i) begin
         // Port A: read current bin value whenever we are about to write
         // (read is registered; result is available the cycle after S_READ)
-        ram_rd_val <= hist_mem[ram_rd_addr];
+        if (state == S_ACTIVE)begin
+            ram_rd_val <= hist_mem[ram_rd_addr];
 
-        // Port B: write incremented value back on S_WRITE
-        if (ram_wr_valid)
-            hist_mem[ram_wr_addr] <= ram_wr_val_d;
+            // Port B: write incremented value back on S_WRITE
+            if (ram_pix_wr_valid)
+                hist_mem[ram_wr_addr] <= pix_ram_wr_val_d;
+        end
+        else if (state == S_SCRUB) begin
+            hist_mem[ram_wr_addr] <= '0;
+        end
     end
 
     // ---- Next-state logic ---------------------------------------------------
@@ -202,17 +208,23 @@ module isp_histogram #(
         pixel_d       = pixel_q;
         beat_shift_d  = beat_shift_q;
         running_cnt_d = running_cnt_q;
+        ram_rd_addr = '0;
 
         case (state)
             // Cold start case
             S_IDLE: begin
                 running_cnt_d = '0;
+                hist_rdy_o = 1'b1;
                 pix_cnt_d = '0;
-                if (fifo_m_valid) begin
+                if (hist_en_i && fifo_m_valid) begin
                     fifo_m_ready = 1'b1;
 
                     beat_shift_d = fifo_m_data;
                     next_state = S_ACTIVE;
+                end
+                else if(ram_scrub_i) begin
+                    next_state = S_SCRUB;
+                    hist_rdy_o = 1'b0;
                 end
             end
 
@@ -238,6 +250,15 @@ module isp_histogram #(
                 end
                 else if(pix_cnt_q == 4'h4)begin
                     pix_cnt_d = 4'h0; next_state = S_IDLE;
+                end
+            end // S_ACTIVE
+
+            S_SCRUB: begin
+                hist_rdy_o = 1'b0;
+                ram_wr_addr = running_cnt_q;
+                running_cnt_d = running_cnt_q + 1;
+                if(running_cnt_q == 8'hFF)begin
+                    next_state = S_IDLE;
                 end
             end
 

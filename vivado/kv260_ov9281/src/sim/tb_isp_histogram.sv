@@ -172,6 +172,23 @@ module tb_isp_histogram;
         repeat(DRAIN_CYCLES) @(posedge clk);
     endtask
 
+    // wait_scrub_done — block until hist_rdy_o goes high, or fail after
+    //                   timeout_cycles if the scrub FSM never completes.
+    task automatic wait_scrub_done(input int timeout_cycles);
+        fork
+            begin : t_wait_rdy
+                @(posedge hist_rdy_o);
+            end
+            begin : t_scrub_timeout
+                repeat(timeout_cycles) @(posedge clk);
+                $display("[%0t ns] [FAIL] Timed out waiting for hist_rdy_o after scrub", $time);
+                fail_count++;
+                disable t_wait_rdy;
+            end
+        join_any
+        disable fork;
+    endtask
+
     // =========================================================================
     // Main test sequence
     // =========================================================================
@@ -264,24 +281,22 @@ module tb_isp_histogram;
         check_bin("pixel 0x04 x2", 8'h04, RAM_WIDTH'(2));
 
         // ----------------------------------------------------------------
-        // Test 5: Scrub placeholder
-        //   Assert ram_scrub_i for one cycle while hist_en_i is low.
-        //   The scrub FSM that iterates over all 256 bins has not yet been
-        //   implemented; this test confirms the signal routing is in place
-        //   and that a strobe does not hang or corrupt the design.
-        //
-        //   TODO: once the scrub FSM is complete, replace the INFO line
-        //         below with:  check_all_zero("post-scrub");
+        // Test 5: RAM scrub
+        //   With hist_en_i low, strobe ram_scrub_i for one cycle, then
+        //   block until hist_rdy_o goes high indicating the scrub FSM has
+        //   finished zeroing all 256 bins.  Verify every bin is zero.
         // ----------------------------------------------------------------
-        $display("\n[%0t ns] --- Test 5: scrub placeholder (scrub FSM TBD) ---", $time);
+        $display("\n[%0t ns] --- Test 5: RAM scrub ---", $time);
         hist_en_i   = 1'b0;
         @(posedge clk);
+        $display("[%0t ns] [INFO] Asserting ram_scrub_i", $time);
         ram_scrub_i = 1'b1;
         @(posedge clk);
         ram_scrub_i = 1'b0;
-        repeat(10) @(posedge clk);
-        $display("[%0t ns] [INFO] ram_scrub_i strobed — scrub FSM not yet implemented, skipping bin check", $time);
-        // TODO: check_all_zero("post-scrub");
+        $display("[%0t ns] [INFO] ram_scrub_i deasserted, waiting for hist_rdy_o", $time);
+        // wait_scrub_done(512);
+        @(posedge hist_rdy_o);
+        check_all_zero("post-scrub");
 
         // ----------------------------------------------------------------
         // Summary
@@ -304,6 +319,19 @@ module tb_isp_histogram;
         #1ms;
         $display("[%0t ns] [TIMEOUT] Simulation exceeded 1 ms — possible hang", $time);
         $finish;
+    end
+
+    // =========================================================================
+    // Signal monitors
+    // =========================================================================
+    initial begin : monitor_hist_rdy
+        forever @(hist_rdy_o)
+            $display("[%0t ns] [MON] hist_rdy_o -> %0b", $time, hist_rdy_o);
+    end
+
+    initial begin : monitor_ram_data_o_vld
+        forever @(ram_data_o_vld)
+            $display("[%0t ns] [MON] ram_data_o_vld -> %0b", $time, ram_data_o_vld);
     end
 
 endmodule
