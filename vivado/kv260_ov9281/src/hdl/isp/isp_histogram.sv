@@ -13,7 +13,7 @@
 // pixel_d = beat_sh_q[7:0]
 // ram_wr_addr = pixel_q
 // ram_rd_addr = pixel_d
-
+// hazard = pixel_d == pixel_q
 // ram_wr_val = hazard ? (ram_wr_val_dly + 1) : (ram_rd_val + 1);
 // ram_wr_en  = (~hazard) && (pix_cnt_d != 0) && (pix_cnt_q != 0);
 
@@ -63,9 +63,6 @@ Two beats, hazard in second beat
   ],
   config: { hscale: 2 }  
 }
-
-
-
 */
 
 `define FF(q, d, rst_val, clk, rst_n) \
@@ -159,25 +156,29 @@ module isp_histogram #(
     } state_t;
 
     state_t                  state,        next_state;
-    logic [3:0]              byte_idx_q,   byte_idx_d;
-    logic [RAM_WIDTH-1:0]    ram_rd_val,   ram_wr_val_d, ram_wr_val_q;
+    logic [3:0]              pix_cnt_d,    pix_cnt_q;
+    logic [RAM_WIDTH-1:0]    ram_rd_val,   ram_wr_val_d, ram_wr_val_q, running_cnt_d, running_cnt_q;
     logic [STREAM_WIDTH-1:0] beat_shift_d, beat_shift_q;
     logic [7:0]              ram_wr_addr,  ram_rd_addr;
-    logic                    ram_wr_valid;
+    logic                    ram_wr_valid, pixel_d_valid;
     logic [7:0]              pixel_q, pixel_d; // current pixel and previous pixel
-    wire                     hazard;
-    assign hazard = (pixel_d == pixel_q);
-    // assign ram_wr_valid = ((state == S_ACTIVE) && (~hazard));
+    logic                    hazard, hazard_q;
+    assign pixel_d_valid = next_state != S_IDLE;
+    assign hazard = pixel_d_valid && (pixel_d == pixel_q) && (running_cnt_d != '0);
+    assign ram_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
+    assign ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
 
     // Pop from FIFO only when idle (about to start a new beat)
     // assign fifo_m_ready = (state == S_IDLE);
 
     // ---- State registers (FF macro) -----------------------------------------
     `FF(state,          next_state,      S_IDLE, clk_i, rst_n)
-    `FF(byte_idx_q,     byte_idx_d,      '0,     clk_i, rst_n)
+    `FF(pix_cnt_q,      pix_cnt_d,       '0,     clk_i, rst_n)
     `FF(pixel_q,        pixel_d,         '0,     clk_i, rst_n)
     `FF(beat_shift_q,   beat_shift_d,    '0,     clk_i, rst_n)
     `FF(ram_wr_val_q,   ram_wr_val_d,    '0,     clk_i, rst_n)
+    `FF(running_cnt_q,  running_cnt_d,   '0,     clk_i, rst_n)
+    `FF(hazard_q,       hazard,          '0,     clk_i, rst_n)
 
     // ---- RAM port A (read) + port B (write) - single always_ff block --------
     always_ff @(posedge clk_i) begin
@@ -193,62 +194,50 @@ module isp_histogram #(
     // ---- Next-state logic ---------------------------------------------------
     always_comb begin
         next_state    = state;
-        byte_idx_d    = byte_idx_q;
+        pix_cnt_d     = pix_cnt_q;
         fifo_m_ready  = 1'b0;
 
-        ram_wr_valid  = 1'b0;
-        ram_wr_val_d  = ram_wr_val_q;
         ram_wr_addr   = 8'h0;
         
         pixel_d       = pixel_q;
         beat_shift_d  = beat_shift_q;
-        byte_idx_d = '0;
+        running_cnt_d = running_cnt_q;
 
         case (state)
             // Cold start case
             S_IDLE: begin
+                running_cnt_d = '0;
+                pix_cnt_d = '0;
                 if (fifo_m_valid) begin
                     fifo_m_ready = 1'b1;
 
-                    // Get the first pixel directly 
-                    pixel_d = fifo_m_data[7:0];
-                    ram_rd_addr = pixel_d;
-
-                    // Get the next pixel ready
-                    beat_shift_d = fifo_m_data[31:8];
+                    beat_shift_d = fifo_m_data;
                     next_state = S_ACTIVE;
                 end
             end
 
             S_ACTIVE: begin
-                beat_shift_d = beat_shift_q >> 8;
+                beat_shift_d = {8'b0, beat_shift_q[31:8]};
+
+                running_cnt_d = running_cnt_q + 1;
+
 
                 // Next Pixel
-                pixel_d = beat_shift_d[7:0];
+                pixel_d = beat_shift_q[7:0];
                 ram_rd_addr = pixel_d;
-                byte_idx_d = byte_idx_q + 1;
+                pix_cnt_d = pix_cnt_q + 1;
 
                 ram_wr_addr = pixel_q;
 
                 // Write collision
-                if(hazard)begin
-                    // ram wr disabled
-                    ram_wr_val_d = ram_wr_val_q + 1;                                                     
-                end else begin
-                    // ram wr is enabled
-                    ram_wr_valid = 1'b1;
-                    ram_wr_val_d = ram_rd_val + 1;
-                end
 
-                if(byte_idx_q == 4'h3)begin
-                    if(fifo_m_valid)begin
-                        fifo_m_ready = 1'b1;
-                        beat_shift_d = fifo_m_data;
-                    end
-                    else begin
-                        next_state = S_IDLE;
-                        byte_idx_d = 4'h0;
-                    end
+                if((pix_cnt_q == 4'h3) && fifo_m_valid)begin
+                    fifo_m_ready = 1'b1;
+                    beat_shift_d = fifo_m_data;
+                    pix_cnt_d = '0;
+                end
+                else if(pix_cnt_q == 4'h4)begin
+                    pix_cnt_d = 4'h0; next_state = S_IDLE;
                 end
             end
 

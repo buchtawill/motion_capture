@@ -57,8 +57,9 @@ sim:
 	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave.tcl --wdb $(TB).wdb --log xsim.log
 
 clean:
-	rm -rf $(OUT_DIR)
+	rm -rf sim_out
 	rm -f *.jou *.log
+	rm -rf .Xil xsim.dir
 
 cleanall:
 	rm -rf sim_out

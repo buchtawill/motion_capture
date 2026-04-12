@@ -10,15 +10,15 @@
       </db_ref>
    </db_ref_list>
    <zoom_setting>
-      <ZoomStartTime time="151.442 ns"></ZoomStartTime>
-      <ZoomEndTime time="268.143 ns"></ZoomEndTime>
-      <Cursor1Time time="182.500 ns"></Cursor1Time>
+      <ZoomStartTime time="64.636 ns"></ZoomStartTime>
+      <ZoomEndTime time="199.079 ns"></ZoomEndTime>
+      <Cursor1Time time="112.500 ns"></Cursor1Time>
    </zoom_setting>
    <column_width_setting>
       <NameColumnWidth column_width="276"></NameColumnWidth>
-      <ValueColumnWidth column_width="120"></ValueColumnWidth>
+      <ValueColumnWidth column_width="84"></ValueColumnWidth>
    </column_width_setting>
-   <WVObjectSize size="18" />
+   <WVObjectSize size="24" />
    <wvobject type="logic" fp_name="/tb_isp_histogram/clk">
       <obj_property name="ElementShortName">clk</obj_property>
       <obj_property name="ObjectShortName">clk</obj_property>
@@ -43,14 +43,6 @@
       <obj_property name="ElementShortName">pix_data_i[31:0]</obj_property>
       <obj_property name="ObjectShortName">pix_data_i[31:0]</obj_property>
    </wvobject>
-   <wvobject type="logic" fp_name="/tb_isp_histogram/dut_isp_histogram/pix_data_vld_i">
-      <obj_property name="ElementShortName">pix_data_vld_i</obj_property>
-      <obj_property name="ObjectShortName">pix_data_vld_i</obj_property>
-   </wvobject>
-   <wvobject type="logic" fp_name="/tb_isp_histogram/dut_isp_histogram/pix_data_rdy_i">
-      <obj_property name="ElementShortName">pix_data_rdy_i</obj_property>
-      <obj_property name="ObjectShortName">pix_data_rdy_i</obj_property>
-   </wvobject>
    <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/fifo_m_data">
       <obj_property name="ElementShortName">fifo_m_data[31:0]</obj_property>
       <obj_property name="ObjectShortName">fifo_m_data[31:0]</obj_property>
@@ -67,13 +59,9 @@
       <obj_property name="ElementShortName">state[1:0]</obj_property>
       <obj_property name="ObjectShortName">state[1:0]</obj_property>
    </wvobject>
-   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/byte_idx_d">
-      <obj_property name="ElementShortName">byte_idx_d[3:0]</obj_property>
-      <obj_property name="ObjectShortName">byte_idx_d[3:0]</obj_property>
-   </wvobject>
-   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/byte_idx_q">
-      <obj_property name="ElementShortName">byte_idx_q[3:0]</obj_property>
-      <obj_property name="ObjectShortName">byte_idx_q[3:0]</obj_property>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/next_state">
+      <obj_property name="ElementShortName">next_state[1:0]</obj_property>
+      <obj_property name="ObjectShortName">next_state[1:0]</obj_property>
    </wvobject>
    <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/ram_rd_val">
       <obj_property name="ElementShortName">ram_rd_val[19:0]</obj_property>
@@ -87,8 +75,44 @@
       <obj_property name="ElementShortName">ram_wr_val_d[19:0]</obj_property>
       <obj_property name="ObjectShortName">ram_wr_val_d[19:0]</obj_property>
    </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/ram_wr_val_q">
+      <obj_property name="ElementShortName">ram_wr_val_q[19:0]</obj_property>
+      <obj_property name="ObjectShortName">ram_wr_val_q[19:0]</obj_property>
+   </wvobject>
    <wvobject type="logic" fp_name="/tb_isp_histogram/dut_isp_histogram/ram_wr_valid">
       <obj_property name="ElementShortName">ram_wr_valid</obj_property>
       <obj_property name="ObjectShortName">ram_wr_valid</obj_property>
+   </wvobject>
+   <wvobject type="logic" fp_name="/tb_isp_histogram/dut_isp_histogram/hazard">
+      <obj_property name="ElementShortName">hazard</obj_property>
+      <obj_property name="ObjectShortName">hazard</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/pix_cnt_d">
+      <obj_property name="ElementShortName">pix_cnt_d[3:0]</obj_property>
+      <obj_property name="ObjectShortName">pix_cnt_d[3:0]</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/pix_cnt_q">
+      <obj_property name="ElementShortName">pix_cnt_q[3:0]</obj_property>
+      <obj_property name="ObjectShortName">pix_cnt_q[3:0]</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/beat_shift_d">
+      <obj_property name="ElementShortName">beat_shift_d[31:0]</obj_property>
+      <obj_property name="ObjectShortName">beat_shift_d[31:0]</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/beat_shift_q">
+      <obj_property name="ElementShortName">beat_shift_q[31:0]</obj_property>
+      <obj_property name="ObjectShortName">beat_shift_q[31:0]</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/pixel_d">
+      <obj_property name="ElementShortName">pixel_d[7:0]</obj_property>
+      <obj_property name="ObjectShortName">pixel_d[7:0]</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/pixel_q">
+      <obj_property name="ElementShortName">pixel_q[7:0]</obj_property>
+      <obj_property name="ObjectShortName">pixel_q[7:0]</obj_property>
+   </wvobject>
+   <wvobject type="array" fp_name="/tb_isp_histogram/dut_isp_histogram/running_cnt_q">
+      <obj_property name="ElementShortName">running_cnt_q[19:0]</obj_property>
+      <obj_property name="ObjectShortName">running_cnt_q[19:0]</obj_property>
    </wvobject>
 </wave_config>

@@ -100,10 +100,10 @@ module tb_isp_histogram;
                          input logic  got,
                          input logic  exp);
         if (got === exp) begin
-            $display("[PASS] %s", label);
+            $display("[%0t ns] [PASS] %s", $time, label);
             pass_count++;
         end else begin
-            $display("[FAIL] %s — expected %0b, got %0b", label, exp, got);
+            $display("[%0t ns] [FAIL] %s — expected %0b, got %0b", $time, label, exp, got);
             fail_count++;
         end
     endtask
@@ -117,11 +117,11 @@ module tb_isp_histogram;
         logic [RAM_WIDTH-1:0] actual;
         actual = dut_isp_histogram.hist_mem[bin];
         if (actual === expected) begin
-            $display("[PASS] %s: hist_mem[0x%02h] = %0d", label, bin, actual);
+            $display("[%0t ns] [PASS] %s: hist_mem[0x%02h] = %0d", $time, label, bin, actual);
             pass_count++;
         end else begin
-            $display("[FAIL] %s: hist_mem[0x%02h] — expected %0d, got %0d",
-                     label, bin, expected, actual);
+            $display("[%0t ns] [FAIL] %s: hist_mem[0x%02h] — expected %0d, got %0d",
+                     $time, label, bin, expected, actual);
             fail_count++;
         end
     endtask
@@ -136,13 +136,13 @@ module tb_isp_histogram;
         for (int i = 0; i < 256; i++) begin
             val = dut_isp_histogram.hist_mem[i];
             if (val !== '0) begin
-                $display("[FAIL] %s: hist_mem[0x%02h] = %0d (expected 0)", label, i, val);
+                $display("[%0t ns] [FAIL] %s: hist_mem[0x%02h] = %0d (expected 0)", $time, label, i, val);
                 fail_count++;
                 ok = 1'b0;
             end
         end
         if (ok) begin
-            $display("[PASS] %s: all 256 bins are zero", label);
+            $display("[%0t ns] [PASS] %s: all 256 bins are zero", $time, label);
             pass_count++;
         end
     endtask
@@ -155,11 +155,12 @@ module tb_isp_histogram;
     //             exactly one clock cycle with both vld and rdy asserted,
     //             simulating a live upstream/downstream handshake.
     task automatic send_beat(input logic [STREAM_WIDTH-1:0] beat);
-        @(posedge clk); #1;
+        $display("[%0t ns] Sending beat 0x%08x", $time, beat);
+        @(posedge clk);
         pix_data_i     = beat;
         pix_data_vld_i = 1'b1;
         pix_data_rdy_i = 1'b1;
-        @(posedge clk); #1;
+        @(posedge clk);
         pix_data_vld_i = 1'b0;
         pix_data_rdy_i = 1'b0;
         pix_data_i     = '0;
@@ -175,6 +176,7 @@ module tb_isp_histogram;
     // Main test sequence
     // =========================================================================
     initial begin : test_seq
+        $timeformat(-9, 0, "", 1); // %t displays in nanoseconds, no auto-suffix
         $display("==============================================");
         $display("  tb_isp_histogram  STREAM_WIDTH=%0d  RAM_WIDTH=%0d",
                  STREAM_WIDTH, RAM_WIDTH);
@@ -186,17 +188,17 @@ module tb_isp_histogram;
         rst_n     = 1'b0;
         hist_en_i = 1'b0;
         repeat(8) @(posedge clk);
-        #1; rst_n = 1'b1;
+        rst_n = 1'b1;
         repeat(4) @(posedge clk);
-        $display("[INFO] Reset released");
+        $display("[%0t ns] [INFO] Reset released", $time);
 
         // ----------------------------------------------------------------
         // Test 1: Post-reset — all 256 bins must be zero
         //   Relies on the initial block in isp_histogram that pre-zeros
         //   hist_mem at simulation time 0.
         // ----------------------------------------------------------------
-        $display("\n--- Test 1: post-reset, all bins zero ---");
-        @(posedge clk); #1;
+        $display("\n[%0t ns] --- Test 1: post-reset, all bins zero ---", $time);
+        @(posedge clk); 
         check_all_zero("post-reset");
 
         // ----------------------------------------------------------------
@@ -205,12 +207,27 @@ module tb_isp_histogram;
         //   All four pixels are identical, exercising the write-hazard path.
         //   Expected: hist_mem[0x55] == 4
         // ----------------------------------------------------------------
-        $display("\n--- Test 2: 4x pixel 0x55 in one beat ---");
+        $display("\n[%0t ns] --- Test 2: 2 beats back to back ---", $time);
         hist_en_i = 1'b1;
-        send_beat(32'h55555555);
+        send_beat(32'h12345678);
+        send_beat(32'h00343400);
+        wait_drain();
         wait_drain();
         hist_en_i = 1'b0;
-        check_bin("4x 0x55", 8'h55, RAM_WIDTH'(4));
+        check_bin("12", 8'h12, RAM_WIDTH'(1));
+        check_bin("34", 8'h34, RAM_WIDTH'(3));
+        check_bin("56", 8'h56, RAM_WIDTH'(1));
+        check_bin("78", 8'h78, RAM_WIDTH'(1));
+        check_bin("00", 8'h00, RAM_WIDTH'(2));
+
+        $display("\n[%0t ns] --- Test 2: 2 beats back to back ---", $time);
+        hist_en_i = 1'b1;
+        send_beat(32'h12345678);
+        send_beat(32'h00003400);
+        wait_drain();
+        wait_drain();
+        hist_en_i = 1'b0;
+        check_bin("00", 8'h00, RAM_WIDTH'(5));
 
         // ----------------------------------------------------------------
         // Test 3: Four distinct pixel values
@@ -221,7 +238,7 @@ module tb_isp_histogram;
         //     bytes[31:24] = 0x04  (pixel 3)
         //   Expected: hist_mem[0x01..0x04] each == 1; all others unchanged
         // ----------------------------------------------------------------
-        $display("\n--- Test 3: distinct pixels {0x04, 0x03, 0x02, 0x01} ---");
+        $display("\n[%0t ns] --- Test 3: distinct pixels {0x04, 0x03, 0x02, 0x01} ---", $time);
         hist_en_i = 1'b1;
         send_beat(32'h04030201);
         wait_drain();
@@ -236,7 +253,7 @@ module tb_isp_histogram;
         //   Send the identical beat a second time; counts must double.
         //   Expected: hist_mem[0x01..0x04] each == 2
         // ----------------------------------------------------------------
-        $display("\n--- Test 4: accumulation (repeat beat from test 3) ---");
+        $display("\n[%0t ns] --- Test 4: accumulation (repeat beat from test 3) ---", $time);
         hist_en_i = 1'b1;
         send_beat(32'h04030201);
         wait_drain();
@@ -256,26 +273,26 @@ module tb_isp_histogram;
         //   TODO: once the scrub FSM is complete, replace the INFO line
         //         below with:  check_all_zero("post-scrub");
         // ----------------------------------------------------------------
-        $display("\n--- Test 5: scrub placeholder (scrub FSM TBD) ---");
+        $display("\n[%0t ns] --- Test 5: scrub placeholder (scrub FSM TBD) ---", $time);
         hist_en_i   = 1'b0;
-        @(posedge clk); #1;
+        @(posedge clk);
         ram_scrub_i = 1'b1;
-        @(posedge clk); #1;
+        @(posedge clk);
         ram_scrub_i = 1'b0;
         repeat(10) @(posedge clk);
-        $display("[INFO] ram_scrub_i strobed — scrub FSM not yet implemented, skipping bin check");
+        $display("[%0t ns] [INFO] ram_scrub_i strobed — scrub FSM not yet implemented, skipping bin check", $time);
         // TODO: check_all_zero("post-scrub");
 
         // ----------------------------------------------------------------
         // Summary
         // ----------------------------------------------------------------
         $display("\n==============================================");
-        $display("  Results: %0d passed, %0d failed", pass_count, fail_count);
+        $display("[%0t ns]   Results: %0d passed, %0d failed", $time, pass_count, fail_count);
         $display("==============================================");
         if (fail_count == 0)
-            $display("  ALL TESTS PASSED");
+            $display("[%0t ns]   SUCCESS: ALL TESTS PASSED", $time);
         else
-            $display("  FAILURES DETECTED");
+            $display("[%0t ns]   ERROR: FAILURES DETECTED", $time);
 
         $finish;
     end
@@ -285,7 +302,7 @@ module tb_isp_histogram;
     // =========================================================================
     initial begin : timeout_watchdog
         #1ms;
-        $display("[TIMEOUT] Simulation exceeded 1 ms — possible hang");
+        $display("[%0t ns] [TIMEOUT] Simulation exceeded 1 ms — possible hang", $time);
         $finish;
     end
 
