@@ -140,7 +140,7 @@ module isp_wrapper #(
         // Software reset of counter registers
         if(hwif_out.CTRL.RESET.value) begin
             hwif_in.CYCLE_SNAP_LO.CYCLE_SNAP_LO.next = 32'h0;
-            hwif_in.CYCLE_SNAP_HI.CYCLE_SNAP_HI.next = 32'h0
+            hwif_in.CYCLE_SNAP_HI.CYCLE_SNAP_HI.next = 32'h0;
             hwif_in.FRAME_SNAP.FRAME_SNAP.next       = 32'h0;
             hwif_in.CYCLE_CNT_LO.CYCLE_CNT_LO.next   = 32'h0;
             hwif_in.CYCLE_CNT_HI.CYCLE_CNT_HI.next   = 32'h0;

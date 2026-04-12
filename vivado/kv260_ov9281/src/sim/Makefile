@@ -31,6 +31,11 @@ SRCS_tb_stream_fifo := \
 	$(HDL_DIR)/stream_fifo.sv \
 	$(SIM_DIR)/tb_stream_fifo.sv
 
+SRCS_tb_isp_histogram := \
+	$(HDL_DIR)/stream_fifo.sv \
+	$(HDL_DIR)/isp/isp_histogram.sv \
+	$(SIM_DIR)/tb_isp_histogram.sv
+
 SRCS := $(SRCS_$(TB))
 
 ifeq ($(SRCS),)
@@ -46,13 +51,14 @@ all: compile run
 compile:
 	mkdir -p $(OUT_DIR)
 	cd $(OUT_DIR) && xvlog --sv $(SRCS) --log xvlog.log
-	cd $(OUT_DIR) && xelab $(TB) -snapshot $(SNAPSHOT) -debug typical --log xelab.log
+	cd $(OUT_DIR) && xelab $(TB) -snapshot $(SNAPSHOT) -debug all --log xelab.log
 
-run:
-	cd $(OUT_DIR) && xsim $(SNAPSHOT) --runall --log xsim.log
+sim:
+	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave.tcl --wdb $(TB).wdb --log xsim.log
 
 clean:
 	rm -rf $(OUT_DIR)
+	rm -f *.jou *.log
 
 cleanall:
 	rm -rf sim_out

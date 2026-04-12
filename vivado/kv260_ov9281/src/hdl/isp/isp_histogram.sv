@@ -10,6 +10,64 @@
 //  - When hist_en_i is low and the ram is not being scrubbed, ram_data_o should show the 
 //    histogram value at ram location ram_addr_i.
 
+// pixel_d = beat_sh_q[7:0]
+// ram_wr_addr = pixel_q
+// ram_rd_addr = pixel_d
+
+// ram_wr_val = hazard ? (ram_wr_val_dly + 1) : (ram_rd_val + 1);
+// ram_wr_en  = (~hazard) && (pix_cnt_d != 0) && (pix_cnt_q != 0);
+
+/*
+Non hazard single beat
+
+{signal: [
+    {name: 'clk', wave: 'p........'},
+    {name: 'state'     , wave: 'x==....=.', data: "IDLE RUN IDLE"},
+    {name: 'next_state', wave: 'x=....=..', data: "RUN IDLE"},
+    {name: 'fifo_mvld' , wave: '010......'},
+    {name: 'fifo_mrdy' , wave: '1.0......'},
+    {name: 'fifo_data' , wave: 'x=x......', data: "12345678 12343400"},
+    {name: 'beat_sh_d' , wave: 'x====xxx.', data: "12345678 123456 1234 12 "},
+    {name: 'beat_sh_q' , wave: 'x.====xx.', data: "12345678 123456 1234 12"},
+    {name: 'pixel_d'   , wave: 'xx====x..', data: "78 56 34 12"},
+    {name: 'pixel_q'   , wave: 'xxx====x.', data: "78 56 34 12"},
+    {name: 'ram_rd_val', wave: 'xxx====x.', data: "00 00 00 00"},
+    {name: 'ram_wr_val', wave: 'xxx====x.', data: "01 01 01 01 "},
+    {name: 'wr_valid'  , wave: '0..1...0.', data: ""},
+    {name: 'hazard'    , wave: 'x0.......', data: ""},
+    {name: 'pix_cnt_d' , wave: 'x======x.', data: "0 1 2 3 4"},
+    {name: 'pix_cnt_q' , wave: 'x.=====x.', data: "0  1 2 3 4"},
+  ],
+  config: { hscale: 2 }  
+}
+
+Two beats, hazard in second beat
+{signal: [
+    {name: 'clk', wave: 'p............'},
+    {name: 'state'     , wave: 'x==........=.', data: "IDLE RUN IDLE"},
+    {name: 'next_state', wave: 'x=........=..', data: "RUN IDLE"},
+    {name: 'fifo_mvld' , wave: '01....0......'},
+    {name: 'fifo_mrdy' , wave: '1.0..10......'},
+    {name: 'fifo_data' , wave: 'x==...xxxxxxx', data: "12345678 12343400"},
+    {name: 'beat_sh_d' , wave: 'x========xxxx', data: "12345678 123456 1234 12 00 34 34 12"},
+    {name: 'beat_sh_q' , wave: 'x.========xxx', data: "12345678 123456 1234 12 00 34 34 12"},
+    {name: 'pixel_d'   , wave: 'xx========xxx', data: "78 56 34 12 00 34 34 12"},
+    {name: 'pixel_q'   , wave: 'xxx========xx', data: "78 56 34 12 00 34 34 12"},
+    {name: 'ram_rd_val', wave: 'xxx========xx', data: "00 00 00 00 00 00 00 01"},
+    {name: 'ram_wr_val', wave: 'xxx========xx', data: "01 01 01 01 01 01 02 02"},
+    {name: 'ram_wr_val_dly', wave: 'xxxx========x', data: "01 01 01 01 01 01 02 02 02"},
+    {name: 'wr_valid'  , wave: '0..1....01.0.', data: ""},
+    {name: 'hazard'    , wave: 'x0......10...', data: ""},
+    {name: 'pix_cnt_d' , wave: '=.=========..', data: "0 1 2 3 0 1 2 3 4 0"},
+    {name: 'pix_cnt_q' , wave: 'x.==========.', data: "0  1 2 3 0 1 2 3 4 0"},
+  ],
+  config: { hscale: 2 }  
+}
+
+
+
+*/
+
 `define FF(q, d, rst_val, clk, rst_n) \
     always_ff @(posedge clk or negedge rst_n) begin \
         if (!rst_n) q <= rst_val; \
@@ -189,6 +247,7 @@ module isp_histogram #(
                     end
                     else begin
                         next_state = S_IDLE;
+                        byte_idx_d = 4'h0;
                     end
                 end
             end
