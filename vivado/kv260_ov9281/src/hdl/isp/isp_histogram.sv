@@ -168,9 +168,9 @@ module isp_histogram #(
     assign hazard = pixel_d_valid && (pixel_d == pixel_q) && (running_cnt_d != '0);
     assign ram_pix_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
     assign pix_ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
+    assign hist_rdy_o = (state == S_IDLE);
 
     // Pop from FIFO only when idle (about to start a new beat)
-    // assign fifo_m_ready = (state == S_IDLE);
 
     // ---- State registers (FF macro) -----------------------------------------
     `FF(state,          next_state,      S_IDLE, clk_i, rst_n)
@@ -185,10 +185,10 @@ module isp_histogram #(
     always_ff @(posedge clk_i) begin
         // Port A: read current bin value whenever we are about to write
         // (read is registered; result is available the cycle after S_READ)
-        if (state == S_ACTIVE)begin
-            ram_rd_val <= hist_mem[ram_rd_addr];
+        ram_rd_val <= hist_mem[ram_rd_addr];
 
-            // Port B: write incremented value back on S_WRITE
+        // Port B: write incremented value back on S_WRITE
+        if (state == S_ACTIVE)begin
             if (ram_pix_wr_valid)
                 hist_mem[ram_wr_addr] <= pix_ram_wr_val_d;
         end
@@ -214,7 +214,6 @@ module isp_histogram #(
             // Cold start case
             S_IDLE: begin
                 running_cnt_d = '0;
-                hist_rdy_o = 1'b1;
                 pix_cnt_d = '0;
                 if (hist_en_i && fifo_m_valid) begin
                     fifo_m_ready = 1'b1;
@@ -224,15 +223,12 @@ module isp_histogram #(
                 end
                 else if(ram_scrub_i) begin
                     next_state = S_SCRUB;
-                    hist_rdy_o = 1'b0;
                 end
             end
 
             S_ACTIVE: begin
-                beat_shift_d = {8'b0, beat_shift_q[31:8]};
-
                 running_cnt_d = running_cnt_q + 1;
-
+                beat_shift_d = {8'b0, beat_shift_q[31:8]};
 
                 // Next Pixel
                 pixel_d = beat_shift_q[7:0];
@@ -242,6 +238,7 @@ module isp_histogram #(
                 ram_wr_addr = pixel_q;
 
                 // Write collision
+                // Edge case if the first two pixels cause a hazard since ram_rd_val is not valid
 
                 if((pix_cnt_q == 4'h3) && fifo_m_valid)begin
                     fifo_m_ready = 1'b1;
@@ -254,7 +251,6 @@ module isp_histogram #(
             end // S_ACTIVE
 
             S_SCRUB: begin
-                hist_rdy_o = 1'b0;
                 ram_wr_addr = running_cnt_q;
                 running_cnt_d = running_cnt_q + 1;
                 if(running_cnt_q == 8'hFF)begin

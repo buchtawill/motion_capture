@@ -1,0 +1,41 @@
+[*]
+[*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
+[*] Sat Apr 18 19:25:33 2026
+[*]
+[dumpfile] "/home/will/Desktop/motion_capture/vivado/kv260_ov9281/src/sim/sim_out/tb_isp_histogram/dump.vcd"
+[dumpfile_mtime] "Sat Apr 18 19:19:54 2026"
+[dumpfile_size] 125070871
+[savefile] "/home/will/Desktop/motion_capture/vivado/kv260_ov9281/src/sim/tb_isp_histogram.gtkw"
+[timestart] 3416700
+[size] 2560 1369
+[pos] 3675 -833
+*-16.000000 3727500 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] tb_isp_histogram.
+[treeopen] tb_isp_histogram.dut_isp_histogram.
+[sst_width] 214
+[signals_width] 269
+[sst_expanded] 1
+[sst_vpaned_height] 422
+@28
+tb_isp_histogram.dut_isp_histogram.clk_i
+tb_isp_histogram.dut_isp_histogram.rst_n
+@22
+tb_isp_histogram.dut_isp_histogram.beat_shift_d[31:0]
+tb_isp_histogram.dut_isp_histogram.beat_shift_q[31:0]
+@28
+tb_isp_histogram.dut_isp_histogram.state[1:0]
+tb_isp_histogram.dut_isp_histogram.next_state[1:0]
+@22
+tb_isp_histogram.dut_isp_histogram.fifo_m_data[31:0]
+@28
+tb_isp_histogram.dut_isp_histogram.fifo_m_valid
+tb_isp_histogram.dut_isp_histogram.fifo_m_ready
+tb_isp_histogram.dut_isp_histogram.hazard
+tb_isp_histogram.dut_isp_histogram.hazard_q
+@23
+tb_isp_histogram.dut_isp_histogram.ram_wr_addr[7:0]
+@22
+tb_isp_histogram.dut_isp_histogram.pix_ram_wr_val_d[19:0]
+tb_isp_histogram.dut_isp_histogram.ram_wr_val_q[19:0]
+[pattern_trace] 1
+[pattern_trace] 0

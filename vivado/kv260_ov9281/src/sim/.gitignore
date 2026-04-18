@@ -1,3 +1,4 @@
 *.pb
 *.wdb
 xsim.dir
+sim_out

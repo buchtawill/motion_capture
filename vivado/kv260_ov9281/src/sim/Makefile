@@ -1,11 +1,11 @@
 # Usage:
-#   make [TB=<testbench>]        — compile + run  (default TB=tb_isp_math)
+#   make [TB=<testbench>]        — compile + run  (default TB=tb_isp_histogram)
 #   make compile [TB=...]        — compile only
 #   make run     [TB=...]        — run only (must compile first)
 #   make clean   [TB=...]        — remove output dir for this TB
 #   make cleanall                — remove all output dirs
 
-TB       ?= tb_isp_math
+TB       ?= tb_isp_histogram
 SNAPSHOT := tb_sim
 OUT_DIR  := sim_out/$(TB)
 
@@ -44,22 +44,30 @@ endif
 
 # ---------------------------------------------------------------------------
 
-.PHONY: all compile run clean cleanall
+.PHONY: all compile sim_fst sim sim_wdb clean
 
-all: compile run
+TBS := $(patsubst $(SIM_DIR)/%.sv,%,$(wildcard $(SIM_DIR)/tb_*.sv))
+
+all:
+	@echo "Available testbench targets:"
+	@$(foreach tb,$(TBS),echo "  make sim TB=$(tb)";)
 
 compile:
 	mkdir -p $(OUT_DIR)
 	cd $(OUT_DIR) && xvlog --sv $(SRCS) --log xvlog.log
 	cd $(OUT_DIR) && xelab $(TB) -snapshot $(SNAPSHOT) -debug all --log xelab.log
 
-sim:
-	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave.tcl --wdb $(TB).wdb --log xsim.log
+sim: clean compile sim_fst
+
+sim_fst:
+	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave_vcd.tcl --log xsim.log && \
+	vcd2fst -v ./waves.vcd -f ./$(TB).fst
+
+sim_fst:
+	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave_wdb.tcl --wdb $(TB).wdb --log xsim.log
 
 clean:
 	rm -rf sim_out
 	rm -f *.jou *.log
 	rm -rf .Xil xsim.dir
 
-cleanall:
-	rm -rf sim_out

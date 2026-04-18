@@ -154,8 +154,8 @@ module tb_isp_histogram;
     // send_beat — present one 32-bit pixel word on the snooped AXI-S bus for
     //             exactly one clock cycle with both vld and rdy asserted,
     //             simulating a live upstream/downstream handshake.
-    task automatic send_beat(input logic [STREAM_WIDTH-1:0] beat);
-        $display("[%0t ns] Sending beat 0x%08x", $time, beat);
+    task automatic send_beat(input logic [STREAM_WIDTH-1:0] beat, int info=1);
+        if(info) $display("[%0t ns] Sending beat 0x%08x", $time, beat);
         @(posedge clk);
         pix_data_i     = beat;
         pix_data_vld_i = 1'b1;
@@ -237,7 +237,6 @@ module tb_isp_histogram;
         check_bin("78", 8'h78, RAM_WIDTH'(1));
         check_bin("00", 8'h00, RAM_WIDTH'(2));
 
-        $display("\n[%0t ns] --- Test 2: 2 beats back to back ---", $time);
         hist_en_i = 1'b1;
         send_beat(32'h12345678);
         send_beat(32'h00003400);
@@ -245,6 +244,13 @@ module tb_isp_histogram;
         wait_drain();
         hist_en_i = 1'b0;
         check_bin("00", 8'h00, RAM_WIDTH'(5));
+
+        repeat(2)@(posedge clk);
+        hist_en_i = 1'b1;
+        send_beat(32'h55555555);
+        wait_drain();
+        check_bin("55", 8'h55, RAM_WIDTH'(4));
+        hist_en_i = 1'b0;
 
         // ----------------------------------------------------------------
         // Test 3: Four distinct pixel values
@@ -294,9 +300,19 @@ module tb_isp_histogram;
         @(posedge clk);
         ram_scrub_i = 1'b0;
         $display("[%0t ns] [INFO] ram_scrub_i deasserted, waiting for hist_rdy_o", $time);
-        // wait_scrub_done(512);
-        @(posedge hist_rdy_o);
+        wait_scrub_done(280);
+        repeat(260)@(posedge clk);
         check_all_zero("post-scrub");
+
+        repeat(20)@(posedge clk);
+        $display("\n[%0t ns] --- Test 6: Sending all zeros for one full image ---", $time);
+        hist_en_i   = 1'b1;
+        // Stream of all zeros
+        for (int i = 0; i < (800*800/4); i++)begin
+            send_beat(32'h00000000, 0);
+            repeat(4)@(posedge clk);
+        end
+        check_bin("All zero", 8'h0, 800*800);
 
         // ----------------------------------------------------------------
         // Summary
@@ -316,18 +332,18 @@ module tb_isp_histogram;
     // Timeout watchdog — abort if the simulation hangs inside a wait loop
     // =========================================================================
     initial begin : timeout_watchdog
-        #1ms;
-        $display("[%0t ns] [TIMEOUT] Simulation exceeded 1 ms — possible hang", $time);
+        #10ms;
+        $display("[%0t ns] [TIMEOUT] Simulation exceeded 10 ms — possible hang", $time);
         $finish;
     end
 
     // =========================================================================
     // Signal monitors
     // =========================================================================
-    initial begin : monitor_hist_rdy
-        forever @(hist_rdy_o)
-            $display("[%0t ns] [MON] hist_rdy_o -> %0b", $time, hist_rdy_o);
-    end
+    // initial begin : monitor_hist_rdy
+    //     forever @(hist_rdy_o)
+    //         $display("[%0t ns] [MON] hist_rdy_o -> %0b", $time, hist_rdy_o);
+    // end
 
     initial begin : monitor_ram_data_o_vld
         forever @(ram_data_o_vld)
