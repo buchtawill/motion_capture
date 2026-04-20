@@ -32,8 +32,9 @@ module tb_isp_histogram;
     // =========================================================================
     // Parameters  (must match DUT instantiation below)
     // =========================================================================
-    localparam int STREAM_WIDTH = 32;
-    localparam int RAM_WIDTH    = 20;
+    localparam int STREAM_WIDTH      = 32;
+    localparam int RAM_WIDTH         = 20;
+    localparam int RAND_TEST_PIXELS  = 128; // pixels per randomized iteration
 
     // Generous drain budget: FIFO latency + 4 FSM cycles + registered RAM read
     localparam int DRAIN_CYCLES = 20;
@@ -93,6 +94,13 @@ module tb_isp_histogram;
     int pass_count = 0;
     int fail_count = 0;
 
+    // =========================================================================
+    // Randomized-test scratch space (module-scope to avoid SV lifetime issues)
+    // =========================================================================
+    int          rand_expected[256];
+    logic [7:0]  rand_pix[RAND_TEST_PIXELS];
+    logic [31:0] rand_beat_word;
+
     // -------------------------------------------------------------------------
     // check — single-bit assertion helper
     // -------------------------------------------------------------------------
@@ -143,6 +151,29 @@ module tb_isp_histogram;
         end
         if (ok) begin
             $display("[%0t ns] [PASS] %s: all 256 bins are zero", $time, label);
+            pass_count++;
+        end
+    endtask
+
+    // -------------------------------------------------------------------------
+    // check_all_bins — compare every hist_mem bin against a software reference;
+    //                  reports a single PASS, or one FAIL line per mismatch.
+    // -------------------------------------------------------------------------
+    task automatic check_all_bins(input string label, input int expected[256]);
+        logic                ok;
+        logic [RAM_WIDTH-1:0] actual;
+        ok = 1'b1;
+        for (int i = 0; i < 256; i++) begin
+            actual = dut_isp_histogram.hist_mem[i];
+            if (actual !== RAM_WIDTH'(expected[i])) begin
+                $display("[%0t ns] [FAIL] %s: hist_mem[0x%02h] — expected %0d, got %0d",
+                         $time, label, i[7:0], expected[i], actual);
+                fail_count++;
+                ok = 1'b0;
+            end
+        end
+        if (ok) begin
+            $display("[%0t ns] [PASS] %s: all 256 bins match", $time, label);
             pass_count++;
         end
     endtask
@@ -219,12 +250,15 @@ module tb_isp_histogram;
         check_all_zero("post-reset");
 
         // ----------------------------------------------------------------
-        // Test 2: Repeated pixel value
-        //   Beat word: 32'h5555_5555  (all four bytes == 0x55)
-        //   All four pixels are identical, exercising the write-hazard path.
-        //   Expected: hist_mem[0x55] == 4
+        // Test 2: Back-to-back beats with accumulation and write-hazard.
+        //   Round A: {0x12345678, 0x00343400}
+        //     → 0x12=1, 0x34=3, 0x56=1, 0x78=1, 0x00=2
+        //   Round B: {0x12345678, 0x00003400}
+        //     → 0x00 accumulates to 5
+        //   Round C: {0x55555555} — all four bytes identical
+        //     → 0x55=4, exercises the same-bin write-hazard path
         // ----------------------------------------------------------------
-        $display("\n[%0t ns] --- Test 2: 2 beats back to back ---", $time);
+        $display("\n[%0t ns] --- Test 2: back-to-back beats, accumulation, hazard ---", $time);
         hist_en_i = 1'b1;
         send_beat(32'h12345678);
         send_beat(32'h00343400);
@@ -308,14 +342,67 @@ module tb_isp_histogram;
         $display("\n[%0t ns] --- Test 6: Sending all zeros for one full image ---", $time);
         hist_en_i   = 1'b1;
         // Stream of all zeros
-        for (int i = 0; i < (4*4/4); i++)begin
+        for (int i = 0; i < (1280*800/4); i++)begin
             send_beat(32'h00000000, 0);
             repeat(3)@(posedge clk);
         end
 
         repeat(8)@(posedge clk);
 
-        check_bin("All zero", 8'h0, 4*4);
+        check_bin("All zero", 8'h0, 1280*800);
+
+        // ----------------------------------------------------------------
+        // Test 7: Randomized bins — 20 iterations × RAND_TEST_PIXELS pixels
+        //   Each iteration:
+        //     1. Generates 128 random byte-valued pixels.
+        //     2. Builds a software reference histogram.
+        //     3. Streams 32 beats (4 pixels each) through the DUT.
+        //     4. Compares every hist_mem bin against the reference.
+        //     5. Clears: iter 0 uses the ram_scrub_i FSM (exercises the
+        //        hardware path); iters 1-19 zero hist_mem[] directly so the
+        //        loop focuses on counting correctness and runs quickly.
+        // ----------------------------------------------------------------
+        $display("\n[%0t ns] --- Test 7: randomized bins (20 iters x %0d pixels) ---", $time, RAND_TEST_PIXELS);
+
+        // Test 6 left bin 0x00 at 1,024,000 counts; zero the RAM first.
+        for (int b = 0; b < 256; b++)
+            dut_isp_histogram.hist_mem[b] = '0;
+
+        for (int iter = 0; iter < 100; iter++) begin
+            // Build software reference model
+            for (int b = 0; b < 256; b++) rand_expected[b] = 0;
+            for (int p = 0; p < RAND_TEST_PIXELS; p++) begin
+                rand_pix[p] = $urandom_range(0, 255);
+                rand_expected[rand_pix[p]]++;
+            end
+
+            // Stream RAND_TEST_PIXELS/4 beats; 3-cycle gap keeps the FIFO from filling
+            hist_en_i = 1'b1;
+            for (int p = 0; p < RAND_TEST_PIXELS; p += 4) begin
+                rand_beat_word = {rand_pix[p+3], rand_pix[p+2], rand_pix[p+1], rand_pix[p]};
+                send_beat(rand_beat_word, 0);
+                repeat(3) @(posedge clk);
+            end
+            wait_drain();
+            wait_drain();
+            hist_en_i = 1'b0;
+
+            // Verify every bin against the reference
+            check_all_bins($sformatf("rand iter %0d", iter), rand_expected);
+
+            // Clear for next iteration
+            if (iter == 0) begin
+                $display("[%0t ns] [INFO] iter 0: clearing via ram_scrub_i FSM", $time);
+                @(posedge clk);
+                ram_scrub_i = 1'b1;
+                @(posedge clk);
+                ram_scrub_i = 1'b0;
+                wait_scrub_done(280);
+            end else begin
+                for (int b = 0; b < 256; b++)
+                    dut_isp_histogram.hist_mem[b] = '0;
+            end
+        end
 
         // ----------------------------------------------------------------
         // Summary
