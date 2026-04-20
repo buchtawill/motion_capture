@@ -381,7 +381,7 @@ module tb_isp_histogram;
             for (int p = 0; p < RAND_TEST_PIXELS; p += 4) begin
                 rand_beat_word = {rand_pix[p+3], rand_pix[p+2], rand_pix[p+1], rand_pix[p]};
                 send_beat(rand_beat_word, 0);
-                repeat(3) @(posedge clk);
+                repeat($urandom_range(0, 5)) @(posedge clk);
             end
             wait_drain();
             wait_drain();
