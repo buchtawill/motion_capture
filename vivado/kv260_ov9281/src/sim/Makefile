@@ -63,7 +63,7 @@ sim_fst:
 	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave_vcd.tcl --log xsim.log && \
 	vcd2fst -v ./waves.vcd -f ./$(TB).fst
 
-sim_fst:
+sim_wdb:
 	cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave_wdb.tcl --wdb $(TB).wdb --log xsim.log
 
 clean:

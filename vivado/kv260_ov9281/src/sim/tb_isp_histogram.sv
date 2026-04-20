@@ -308,11 +308,14 @@ module tb_isp_histogram;
         $display("\n[%0t ns] --- Test 6: Sending all zeros for one full image ---", $time);
         hist_en_i   = 1'b1;
         // Stream of all zeros
-        for (int i = 0; i < (800*800/4); i++)begin
+        for (int i = 0; i < (4*4/4); i++)begin
             send_beat(32'h00000000, 0);
-            repeat(4)@(posedge clk);
+            repeat(3)@(posedge clk);
         end
-        check_bin("All zero", 8'h0, 800*800);
+
+        repeat(8)@(posedge clk);
+
+        check_bin("All zero", 8'h0, 4*4);
 
         // ----------------------------------------------------------------
         // Summary

@@ -165,9 +165,9 @@ module isp_histogram #(
     logic [7:0]              pixel_q, pixel_d; // current pixel and previous pixel
     logic                    hazard, hazard_q;
     assign pixel_d_valid = next_state != S_IDLE;
-    assign hazard = pixel_d_valid && (pixel_d == pixel_q) && (running_cnt_d != '0);
-    assign ram_pix_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
-    assign pix_ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
+    assign hazard = pixel_d_valid && (pixel_d == pixel_q) && (running_cnt_q != '0);
+    // assign ram_pix_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
+    // assign pix_ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
     assign hist_rdy_o = (state == S_IDLE);
 
     // Pop from FIFO only when idle (about to start a new beat)
@@ -210,6 +210,9 @@ module isp_histogram #(
         running_cnt_d = running_cnt_q;
         ram_rd_addr = '0;
 
+        pix_ram_wr_val_d = ram_wr_val_q;
+        ram_pix_wr_valid = 1'b0;
+
         case (state)
             // Cold start case
             S_IDLE: begin
@@ -237,8 +240,16 @@ module isp_histogram #(
 
                 ram_wr_addr = pixel_q;
 
+                if(~hazard && running_cnt_q > '0)begin
+                    ram_pix_wr_valid = 1;
+                end 
+
                 // Write collision
-                // Edge case if the first two pixels cause a hazard since ram_rd_val is not valid
+                if(hazard_q)begin
+                    pix_ram_wr_val_d = ram_wr_val_q + 1;
+                end else begin
+                    pix_ram_wr_val_d = ram_rd_val + 1;
+                end
 
                 if((pix_cnt_q == 4'h3) && fifo_m_valid)begin
                     fifo_m_ready = 1'b1;
