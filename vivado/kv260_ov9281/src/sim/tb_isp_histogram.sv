@@ -8,22 +8,25 @@
 //   rather than consuming it, so the testbench asserts both signals together to
 //   simulate a live upstream/downstream handshake.
 //
-//   Phase 1 (this file): histogram correctness is verified by reading
-//   dut_isp_histogram.hist_mem[] directly instead of going through the
-//   ram_addr_i / ram_data_o read-port interface.  The read-port path will be
-//   exercised in a later phase once the scrub FSM is also complete.
+//   Bin verification uses two paths:
+//     backdoor  — direct read of dut_isp_histogram.hist_mem[] (fast, always available)
+//     frontdoor — hardware ram_addr_i / ram_data_o interface (requires hist_en_i=0)
 //
 // Test plan
 //   1. Post-reset / init  — all 256 hist_mem bins are zero after reset
-//   2. Repeated pixel     — 4× pixel 0x55 in one beat
-//                           → hist_mem[0x55] must equal 4
+//   2. Back-to-back beats — accumulation and write-hazard across multiple beats
 //   3. Distinct pixels    — beat {0x04, 0x03, 0x02, 0x01}
 //                           → hist_mem[0x01..0x04] each equal 1
 //   4. Accumulation       — repeat the same beat from test 3
 //                           → hist_mem[0x01..0x04] each equal 2
-//   5. Scrub placeholder  — strobe ram_scrub_i with hist_en_i low
-//                           (scrub FSM is TBD; test validates signal plumbing
-//                            and will be completed alongside the FSM)
+//   5. RAM scrub          — strobe ram_scrub_i, wait for hist_rdy_o,
+//                           verify all 256 bins are zero
+//   6. Full-image zeros   — stream 1280×800 zero-valued pixels
+//                           → hist_mem[0x00] == 1,024,000
+//   7. RAM read-port      — verify ram_data_o / ram_data_o_vld interface:
+//                           vld gating, frontdoor read after stream, after scrub
+//   8. Randomized bins    — 20 iterations × RAND_TEST_PIXELS random pixels;
+//                           each iteration checked via backdoor and frontdoor
 
 `timescale 1ns / 1ps
 
@@ -156,25 +159,48 @@ module tb_isp_histogram;
     endtask
 
     // -------------------------------------------------------------------------
-    // check_all_bins — compare every hist_mem bin against a software reference;
-    //                  reports a single PASS, or one FAIL line per mismatch.
+    // check_all_bins — compare every hist_mem bin against a software reference.
+    //   backdoor=1  : sweep via direct hist_mem[] access
+    //   frontdoor=1 : sweep via ram_addr_i / ram_data_o (requires hist_en_i=0)
+    //   Both default to 1; pass 0 to skip either path.
     // -------------------------------------------------------------------------
-    task automatic check_all_bins(input string label, input int expected[256]);
-        logic                ok;
+    task automatic check_all_bins(
+        input string label,
+        input int    expected[256],
+        input bit    backdoor  = 1,
+        input bit    frontdoor = 1
+    );
+        logic                 ok;
         logic [RAM_WIDTH-1:0] actual;
-        ok = 1'b1;
-        for (int i = 0; i < 256; i++) begin
-            actual = dut_isp_histogram.hist_mem[i];
-            if (actual !== RAM_WIDTH'(expected[i])) begin
-                $display("[%0t ns] [FAIL] %s: hist_mem[0x%02h] — expected %0d, got %0d",
-                         $time, label, i[7:0], expected[i], actual);
-                fail_count++;
-                ok = 1'b0;
+
+        if (backdoor) begin
+            ok = 1'b1;
+            for (int i = 0; i < 256; i++) begin
+                actual = dut_isp_histogram.hist_mem[i];
+                if (actual !== RAM_WIDTH'(expected[i])) begin
+                    $display("[%0t ns] [FAIL] %s (backdoor): hist_mem[0x%02h] — expected %0d, got %0d",
+                             $time, label, i[7:0], expected[i], actual);
+                    fail_count++;
+                    ok = 1'b0;
+                end
             end
+            if (ok)
+                $display("[%0t ns] [PASS] %s (backdoor): all 256 bins match", $time, label);
         end
-        if (ok) begin
-            $display("[%0t ns] [PASS] %s: all 256 bins match", $time, label);
-            pass_count++;
+
+        if (frontdoor) begin
+            ok = 1'b1;
+            for (int i = 0; i < 256; i++) begin
+                read_bin_ram(i[7:0], actual);
+                if (actual !== RAM_WIDTH'(expected[i])) begin
+                    $display("[%0t ns] [FAIL] %s (frontdoor): ram_data_o[0x%02h] — expected %0d, got %0d",
+                             $time, label, i[7:0], expected[i], actual);
+                    fail_count++;
+                    ok = 1'b0;
+                end
+            end
+            if (ok)
+                $display("[%0t ns] [PASS] %s (frontdoor): all 256 bins match", $time, label);
         end
     endtask
 
@@ -218,6 +244,35 @@ module tb_isp_histogram;
             end
         join_any
         disable fork;
+    endtask
+
+    // read_bin_ram — drive ram_addr_i, wait one clock, return ram_data_o.
+    //               ram_data_o is combinational from hist_mem[ram_addr_i], so
+    //               data is valid immediately after the address is applied.
+    //               The single clock wait lets any in-flight write commit first.
+    //               Requires hist_en_i=0 on entry (caller's responsibility).
+    task automatic read_bin_ram(input  logic [7:0]          addr,
+                                 output logic [RAM_WIDTH-1:0] data);
+        ram_addr_i = addr;
+        @(posedge clk); 
+        #1;
+        data = ram_data_o;
+    endtask
+
+    // check_bin_ram — frontdoor equivalent of check_bin.
+    task automatic check_bin_ram(input string               label,
+                                  input logic [7:0]          bin,
+                                  input logic [RAM_WIDTH-1:0] expected);
+        logic [RAM_WIDTH-1:0] actual;
+        read_bin_ram(bin, actual);
+        if (actual === expected) begin
+            $display("[%0t ns] [PASS] %s: ram_data_o[0x%02h] = %0d", $time, label, bin, actual);
+            pass_count++;
+        end else begin
+            $display("[%0t ns] [FAIL] %s: ram_data_o[0x%02h] — expected %0d, got %0d",
+                     $time, label, bin, expected, actual);
+            fail_count++;
+        end
     endtask
 
     // =========================================================================
@@ -352,22 +407,54 @@ module tb_isp_histogram;
         check_bin("All zero", 8'h0, 1280*800);
 
         // ----------------------------------------------------------------
-        // Test 7: Randomized bins — 20 iterations × RAND_TEST_PIXELS pixels
-        //   Each iteration:
-        //     1. Generates 128 random byte-valued pixels.
-        //     2. Builds a software reference histogram.
-        //     3. Streams 32 beats (4 pixels each) through the DUT.
-        //     4. Compares every hist_mem bin against the reference.
-        //     5. Clears: iter 0 uses the ram_scrub_i FSM (exercises the
-        //        hardware path); iters 1-19 zero hist_mem[] directly so the
-        //        loop focuses on counting correctness and runs quickly.
+        // Test 7: RAM read-port sanity
+        //   7a. ram_data_o_vld gating — high only when hist_en_i=0 and IDLE
+        //   7b. Frontdoor read after known stream — bins 1-4 via ram interface
+        //   7c. Frontdoor read after scrub — all bins via ram interface = 0
         // ----------------------------------------------------------------
-        $display("\n[%0t ns] --- Test 7: randomized bins (20 iters x %0d pixels) ---", $time, RAND_TEST_PIXELS);
+        $display("\n[%0t ns] --- Test 7: RAM read-port sanity ---", $time);
 
-        // Test 6 left bin 0x00 at 1,024,000 counts; zero the RAM first.
-        for (int b = 0; b < 256; b++)
-            dut_isp_histogram.hist_mem[b] = '0;
+        // 7a: vld must be low while hist_en_i=1, high when hist_en_i=0
+        $display("[%0t ns] [INFO] Test 7a: ram_data_o_vld gating", $time);
+        hist_en_i = 1'b1;
+        @(posedge clk);
+        check("7a: vld low  (hist_en_i=1)", ram_data_o_vld, 1'b0);
+        hist_en_i = 1'b0;
+        @(posedge clk);
+        check("7a: vld high (hist_en_i=0)", ram_data_o_vld, 1'b1);
 
+        // 7b: stream a known beat, read specific bins via frontdoor.
+        //     After Test 6, bins 0x01-0x04 are 0 (only 0x00 was incremented).
+        $display("[%0t ns] [INFO] Test 7b: frontdoor read after known stream", $time);
+        hist_en_i = 1'b1;
+        send_beat(32'h04030201);
+        wait_drain();
+        hist_en_i = 1'b0;
+        check_bin_ram("7b pixel 0x01", 8'h01, RAM_WIDTH'(1));
+        check_bin_ram("7b pixel 0x02", 8'h02, RAM_WIDTH'(1));
+        check_bin_ram("7b pixel 0x03", 8'h03, RAM_WIDTH'(1));
+        check_bin_ram("7b pixel 0x04", 8'h04, RAM_WIDTH'(1));
+
+        // 7c: scrub then sweep all 256 bins via frontdoor only.
+        $display("[%0t ns] [INFO] Test 7c: frontdoor read after scrub", $time);
+        @(posedge clk);
+        ram_scrub_i = 1'b1;
+        @(posedge clk);
+        ram_scrub_i = 1'b0;
+        wait_scrub_done(280);
+        for (int b = 0; b < 256; b++) rand_expected[b] = 0;
+        check_all_bins("post-scrub 7c", rand_expected, /*backdoor=*/0, /*frontdoor=*/1);
+
+        // ----------------------------------------------------------------
+        // Test 8: Randomized bins — 20 iterations × RAND_TEST_PIXELS pixels
+        //   Each iteration generates random byte-valued pixels, builds a
+        //   software reference histogram, streams through the DUT, then
+        //   checks every bin via both backdoor and frontdoor paths.
+        //   Iter 0 clears via ram_scrub_i; iters 1-19 zero hist_mem[] directly.
+        // ----------------------------------------------------------------
+        $display("\n[%0t ns] --- Test 8: randomized bins (20 iters x %0d pixels) ---", $time, RAND_TEST_PIXELS);
+
+        // Test 7c already scrubbed the RAM via the hardware FSM.
         for (int iter = 0; iter < 100; iter++) begin
             // Build software reference model
             for (int b = 0; b < 256; b++) rand_expected[b] = 0;
@@ -435,9 +522,9 @@ module tb_isp_histogram;
     //         $display("[%0t ns] [MON] hist_rdy_o -> %0b", $time, hist_rdy_o);
     // end
 
-    initial begin : monitor_ram_data_o_vld
-        forever @(ram_data_o_vld)
-            $display("[%0t ns] [MON] ram_data_o_vld -> %0b", $time, ram_data_o_vld);
-    end
+    // initial begin : monitor_ram_data_o_vld
+    //     forever @(ram_data_o_vld)
+    //         $display("[%0t ns] [MON] ram_data_o_vld -> %0b", $time, ram_data_o_vld);
+    // end
 
 endmodule

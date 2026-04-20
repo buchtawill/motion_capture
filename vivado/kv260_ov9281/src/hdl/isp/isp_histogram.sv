@@ -18,6 +18,7 @@
 // ram_wr_en  = (~hazard) && (pix_cnt_d != 0) && (pix_cnt_q != 0);
 
 /*
+Wavedrom:
 Non hazard single beat
 
 {signal: [
@@ -140,8 +141,6 @@ module isp_histogram #(
     logic [RAM_WIDTH-1:0] hist_mem[0:255];
     
     // Zero every bin at sim time 0 so the RAM does not start with X.
-    // The run-time scrub path (ram_scrub_i) will also zero this array;
-    // that FSM is left as a placeholder for a later pass.
     initial begin
         for (int i = 0; i < 256; i++)
             hist_mem[i] = '0;
@@ -169,17 +168,19 @@ module isp_histogram #(
     // assign ram_pix_wr_valid = ((state == S_ACTIVE) && (~hazard) && (running_cnt_q != '0));
     // assign pix_ram_wr_val_d = (state == S_ACTIVE) ? (hazard_q ? (ram_wr_val_q + 1) : (ram_rd_val + 1)) : '0; 
     assign hist_rdy_o = (state == S_IDLE);
+    assign ram_data_o = ram_rd_val;
 
     // Pop from FIFO only when idle (about to start a new beat)
 
     // ---- State registers (FF macro) -----------------------------------------
-    `FF(state,          next_state,      S_IDLE, clk_i, rst_n)
-    `FF(pix_cnt_q,      pix_cnt_d,       '0,     clk_i, rst_n)
-    `FF(pixel_q,        pixel_d,         '0,     clk_i, rst_n)
-    `FF(beat_shift_q,   beat_shift_d,    '0,     clk_i, rst_n)
+    `FF(state,          next_state,          S_IDLE, clk_i, rst_n)
+    `FF(pix_cnt_q,      pix_cnt_d,           '0,     clk_i, rst_n)
+    `FF(pixel_q,        pixel_d,             '0,     clk_i, rst_n)
+    `FF(beat_shift_q,   beat_shift_d,        '0,     clk_i, rst_n)
     `FF(ram_wr_val_q,   pix_ram_wr_val_d,    '0,     clk_i, rst_n)
-    `FF(running_cnt_q,  running_cnt_d,   '0,     clk_i, rst_n)
-    `FF(hazard_q,       hazard,          '0,     clk_i, rst_n)
+    `FF(running_cnt_q,  running_cnt_d,       '0,     clk_i, rst_n)
+    `FF(hazard_q,       hazard,              '0,     clk_i, rst_n)
+    `FF(ram_data_o_vld, (state == S_IDLE) & ~hist_en_i, 1'b0, clk_i, rst_n)
 
     // ---- RAM port A (read) + port B (write) - single always_ff block --------
     always_ff @(posedge clk_i) begin
@@ -216,8 +217,9 @@ module isp_histogram #(
         case (state)
             // Cold start case
             S_IDLE: begin
+                ram_rd_addr   = ram_addr_i;
                 running_cnt_d = '0;
-                pix_cnt_d = '0;
+                pix_cnt_d     = '0;
                 if (hist_en_i && fifo_m_valid) begin
                     fifo_m_ready = 1'b1;
 
