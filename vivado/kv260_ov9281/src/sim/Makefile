@@ -27,6 +27,9 @@ SRCS_tb_isp_math := \
 	$(HDL_DIR)/isp/isp_math_wrapper.v \
 	$(SIM_DIR)/tb_isp_math.sv
 
+# Per-TB include directories (used for `include "isp_regs_defines.svh"` etc.)
+INCDIRS_tb_isp_math := $(HDL_DIR)/isp
+
 SRCS_tb_stream_fifo := \
 	$(HDL_DIR)/stream_fifo.sv \
 	$(SIM_DIR)/tb_stream_fifo.sv
@@ -36,11 +39,14 @@ SRCS_tb_isp_histogram := \
 	$(HDL_DIR)/isp/isp_histogram.sv \
 	$(SIM_DIR)/tb_isp_histogram.sv
 
-SRCS := $(SRCS_$(TB))
+SRCS    := $(SRCS_$(TB))
+INCDIRS := $(INCDIRS_$(TB))
 
 ifeq ($(SRCS),)
 $(error Unknown TB '$(TB)'. Add a SRCS_$(TB) entry to the Makefile.)
 endif
+
+XVLOG_INC := $(addprefix -i ,$(INCDIRS))
 
 # ---------------------------------------------------------------------------
 
@@ -54,7 +60,7 @@ all:
 
 compile:
 	mkdir -p $(OUT_DIR)
-	cd $(OUT_DIR) && xvlog --sv $(SRCS) --log xvlog.log
+	cd $(OUT_DIR) && xvlog --sv $(XVLOG_INC) $(SRCS) --log xvlog.log
 	cd $(OUT_DIR) && xelab $(TB) -snapshot $(SNAPSHOT) -debug all --log xelab.log
 
 sim: clean compile sim_fst

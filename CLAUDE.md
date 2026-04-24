@@ -92,6 +92,46 @@ The ARM application:
 | `PS_GPIO.h` | GPIO driver for camera control signals |
 | `ScuGicInterruptController.h` | Zynq GIC interrupt controller wrapper |
 
+### Simulation / Testbenches
+
+All testbenches live in `vivado/kv260_ov9281/src/sim/` and share a single Makefile.
+Requires Vivado (xvlog/xelab/xsim) on PATH.
+
+```bash
+cd vivado/kv260_ov9281/src/sim
+
+# Compile + run (default TB: tb_isp_histogram), produce FST waveform
+make sim [TB=<testbench>]
+
+# Compile only / run only
+make compile [TB=<testbench>]
+make sim_fst [TB=<testbench>]
+
+# Open waveform in Vivado GUI
+make sim_wdb [TB=<testbench>]
+
+# Clean
+make clean        # remove sim_out/
+make cleanall     # same (alias)
+```
+
+Waveforms are written to `sim_out/<TB>/waves.vcd` (converted to `<TB>.fst`).
+
+| Testbench | DUT(s) | What it covers |
+|---|---|---|
+| `tb_isp_histogram` | `isp_histogram.sv` + `stream_fifo.sv` | 256-bin histogram: counting correctness, write-hazard, RAM scrub, full-image stream, RAM read-port (frontdoor), randomized 100-iteration stress |
+| `tb_stream_fifo` | `stream_fifo.sv` | Fill/drain order, full/empty boundaries, backpressure |
+| `tb_isp_math` | `isp_math_wrapper.v` + `isp_math_top.sv` | AXI-Lite register reads (HRES, VRES reset defaults) |
+| `tb_frame_rate` | `isp_wrapper.v` | FPS measurement, mid-count reset and disable |
+
+**`tb_isp_histogram` verification strategy**
+
+Bin counts are verified through two independent paths on every check:
+- **Backdoor** — direct `dut_isp_histogram.hist_mem[]` array access (zero latency, always available)
+- **Frontdoor** — hardware `ram_addr_i` / `ram_data_o` port (requires `hist_en_i=0`; DUT presents registered output one cycle after address is driven)
+
+Key tasks: `send_beat`, `wait_drain`, `wait_scrub_done`, `read_bin_ram`, `check_bin`, `check_bin_ram`, `check_all_zero`, `check_all_bins(label, expected, backdoor=1, frontdoor=1)`.
+
 ### Vivado Build Flow
 
 `create_proj.tcl` — Creates the Vivado project, adds all `src/` files (HDL, constraints, block design TCL), and sets file properties.
