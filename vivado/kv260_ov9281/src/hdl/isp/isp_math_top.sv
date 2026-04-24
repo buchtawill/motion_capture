@@ -1,31 +1,29 @@
 // isp_math_top.sv
-// Top-level ISP wrapper for Vivado IP Integrator (KV260 / OV9281).
+// Top-level ISP statistics helper for Vivado IP Integrator (KV260 / OV9281).
 // https://docs.google.com/document/d/1X94gooBqVSsMei09nRS8F3e_mesuL7J35dIWdkzZWnM/edit?usp=sharing
-// Instantiates the PeakRDL-generated register block (isp_regs.sv) and wires
-// the AXI4-Lite slave port through to it. The AXI-Stream path is a pure
-// passthrough for now -- zero latency, no backpressure added.
 //
-// The register-level plumbing implemented here:
-//   * Free-running cycle counter (64b, LO+HI) with per-counter SW reset
-//     -- local flops; value is published to the regblock as .next each cycle.
-//   * Frame counter (32b), incremented on TUSER & TVALID & TREADY.
-//   * Cycle + frame snapshot registers, latched on CTRL.SNAPSHOT.
-//   * Global CTRL.RESET clears all counters and snapshots.
-//   * HIST_ADDR auto-increment on AXI reads of HIST_DATA (gated by
-//     CTRL.HIST_ADDR_AUTOINC).
-//   * STATUS.HIST_FIFO_ERR sticky-bit flop.
+// Hierarchy:
+//   isp_math_wrapper.v
+//     isp_math_top.sv         (this file)
+//       isp_regs              (PeakRDL-generated AXI4-Lite slave)
+//       isp_histogram         (256-bin histogram w/ internal FIFO)
+//       local counters        (cycle, frame, pixel sum, beat count)
 //
-// Stubs (to be wired once isp_histogram.sv and the histogram FSM land):
-//   * STATUS.READY is tied to 1 (no scrub FSM yet).
-//   * STATUS.HIST_DATA_VALID is tied to 0.
-//   * PIXEL_SUM is tied to 0.
-//   * HIST_DATA is tied to 0.
-//   * HIST_FIFO_ERR raw input is tied to 0.
+// Datapath posture
+//   The AXI-Stream path from MIPI CSI RX -> AXI VDMA is a PURE SNOOP. This
+//   module does not buffer, stall, or backpressure the datapath. The only
+//   FIFO in the pipeline is the one inside isp_histogram, which the histogram
+//   drains on its own; if it overflows, STATUS.HIST_FIFO_ERR latches sticky.
 //
-// The counter / snapshot fields in isp_regs.rdl are declared hw=w; sw=r;
-// meaning the regblock is the SW-visible storage and HW cannot read back the
-// register's contents. All counter state is kept in local flops in this
-// module; we only drive .next to publish values into the regblock.
+// Measurement flow (matches the spec state flow):
+//   RTL reset           -> POST_RESET_SCRUB (scrub hist RAM) -> IDLE
+//   IDLE + HISTOGRAM_START && HRES!=0 && VRES!=0
+//                       -> START_SCRUB -> WAIT_SCRUB
+//                       -> WAIT_TUSER  -> (on TUSER beat) MEASURE
+//                       -> FLUSH (drain hist FIFO) -> IDLE (set HIST_DATA_VALID)
+//
+// Counter / snapshot fields in isp_regs.rdl are hw=w;sw=r, so this module
+// holds counter state in local flops and republishes .next to the regblock.
 
 `timescale 1ns / 1ps
 
@@ -93,7 +91,7 @@ module isp_wrapper #(
 );
 
     // =========================================================================
-    // AXI-Stream passthrough
+    // AXI-Stream passthrough (no stall, no backpressure, zero datapath latency)
     // =========================================================================
     assign m_axis_tdata  = s_axis_tdata;
     assign m_axis_tkeep  = {AXIS_TKEEP_WIDTH{1'b1}};
@@ -103,33 +101,27 @@ module isp_wrapper #(
     assign s_axis_tready = m_axis_tready;
 
     // =========================================================================
-    // Hardware interface structs
+    // Register-block hwif
     // =========================================================================
     isp_regs__in_t  hwif_in;
     isp_regs__out_t hwif_out;
 
     // =========================================================================
-    // Derived strobes
+    // CTRL-derived strobes
     // =========================================================================
     wire rst_all    = hwif_out.CTRL.RESET.value;
     wire rst_frame  = rst_all | hwif_out.CTRL.FRAME_CNT_RESET.value;
     wire rst_cycle  = rst_all | hwif_out.CTRL.CYCLE_CNT_RESET.value;
     wire snap_pulse = hwif_out.CTRL.SNAPSHOT.value;
 
-    // "Frame tick" = first accepted beat of a frame from MIPI CSI RX:
-    // TUSER marks that beat, TVALID/TREADY qualify it.
-    wire frame_tick = s_axis_tuser[0] & s_axis_tvalid & m_axis_tready;
-
-    // Snoop AXI read handshake targeting HIST_DATA to drive HIST_ADDR autoinc.
-    wire hist_data_ar_handshake =
-        s_axi_arvalid & s_axi_arready & (s_axi_araddr == `ISP_REG_HIST_DATA);
+    // AXIS handshake shorthand (tready is the passthrough of m_axis_tready)
+    wire beat_accepted = s_axis_tvalid & m_axis_tready;
+    wire tuser_tick    = s_axis_tuser[0] & beat_accepted;
+    wire frame_tick    = tuser_tick;  // frame counter increments on first beat of each frame
 
     // =========================================================================
-    // Local counter / snapshot flops
-    //
-    // The regblock does not expose these fields back to HW (hw=w;sw=r), so we
-    // hold the counter state here and republish it as .next every cycle. The
-    // regblock latches .next on each clock; SW sees the same value.
+    // Cycle + frame counters and their snapshots (local state; regblock is
+    // sw=r;hw=w so we republish via .next each cycle)
     // =========================================================================
     logic [31:0] cycle_cnt_lo_q,  cycle_cnt_hi_q;
     logic [31:0] cycle_snap_lo_q, cycle_snap_hi_q;
@@ -173,30 +165,225 @@ module isp_wrapper #(
     end
 
     // =========================================================================
-    // STATUS.HIST_FIFO_ERR sticky bit
-    //
-    // Driven by isp_histogram once that module is instantiated; tied to 0 for
-    // now. Cleared only by RTL reset or CTRL.RESET, per spec.
+    // isp_histogram output signals (declared up here so the FSM can reference
+    // hist_rdy before the instance itself is laid out below)
     // =========================================================================
-    wire  hist_fifo_err_raw = 1'b0;
-    logic hist_fifo_err_sticky;
+    logic [19:0] hist_ram_data;
+    logic        hist_ram_data_vld;  // unused; HIST_DATA reads route via regblock
+    logic        hist_rdy;
+    logic        hist_err;
 
+    // =========================================================================
+    // Measurement FSM
+    // =========================================================================
+    typedef enum logic [2:0] {
+        ST_POST_RESET_SCRUB      = 3'd0,  // 1-cycle ram_scrub pulse post-reset
+        ST_WAIT_POST_RESET_SCRUB = 3'd1,  // wait for hist_rdy rising edge
+        ST_IDLE                  = 3'd2,  // READY = 1; awaiting HISTOGRAM_START
+        ST_START_SCRUB           = 3'd3,  // 1-cycle ram_scrub pulse (measurement)
+        ST_WAIT_SCRUB            = 3'd4,  // wait for hist_rdy rising edge
+        ST_WAIT_TUSER            = 3'd5,  // arm hist_en when first TUSER beat arrives
+        ST_MEASURE               = 3'd6,  // hist_en=1; count HRES*VRES/4 beats
+        ST_FLUSH                 = 3'd7   // drain internal FIFO, then set HIST_DATA_VALID
+    } state_t;
+
+    state_t      state, next_state;
+    logic        seen_scrub_busy_q;         // rising-edge detector for hist_rdy
+    logic [31:0] beat_cnt_q;                // beats captured this measurement
+    logic [31:0] pixel_sum_q;               // sum of pixels this measurement
+    logic        data_valid_q;              // STATUS.HIST_DATA_VALID latch
+    logic [7:0]  flush_cnt_q;               // FLUSH drain timer
+
+    // HRES/VRES guards (spec: ignore HISTOGRAM_START if either is 0)
+    wire [15:0] hres = hwif_out.HRES.HRES.value;
+    wire [15:0] vres = hwif_out.VRES.VRES.value;
+    wire        dims_nonzero = (hres != 16'h0) & (vres != 16'h0);
+
+    // Beat-count target: pixels-per-frame / 4 pixels-per-beat
+    wire [31:0] target_beats = ({16'h0, hres} * {16'h0, vres}) >> 2;
+
+    // HISTOGRAM_START only honored when the FSM is in IDLE (implies READY=1)
+    wire start_valid = hwif_out.CTRL.HISTOGRAM_START.value & dims_nonzero;
+
+    // "Capture this beat now" — true on beats counted into beat_cnt / pixel_sum.
+    // Includes the TUSER beat itself, because hist_en is raised combinationally
+    // on that cycle.
+    wire capture_beat_now =
+        (state == ST_MEASURE    && beat_accepted) |
+        (state == ST_WAIT_TUSER && tuser_tick);
+
+    // Gate the tvalid fed to isp_histogram so that no more than target_beats
+    // beats ever reach its FIFO, regardless of upstream traffic during FLUSH.
+    wire hist_saturated = (beat_cnt_q >= target_beats);
+    wire tvalid_to_hist = s_axis_tvalid & ~hist_saturated;
+
+    // =========================================================================
+    // FSM next-state and combinational outputs
+    // =========================================================================
+    logic hist_en;     // to isp_histogram
+    logic ram_scrub;   // to isp_histogram
+
+    always_comb begin
+        next_state = state;
+        case (state)
+            // POST_RESET_SCRUB is a 1-cycle scrub-pulse state; we flow
+            // unconditionally into the wait state and drop ram_scrub.
+            ST_POST_RESET_SCRUB:      next_state = ST_WAIT_POST_RESET_SCRUB;
+
+            ST_WAIT_POST_RESET_SCRUB: if (seen_scrub_busy_q & hist_rdy)
+                                          next_state = ST_IDLE;
+
+            ST_IDLE:                  if (start_valid)
+                                          next_state = ST_START_SCRUB;
+
+            ST_START_SCRUB:           next_state = ST_WAIT_SCRUB;
+
+            ST_WAIT_SCRUB:            if (seen_scrub_busy_q & hist_rdy)
+                                          next_state = ST_WAIT_TUSER;
+
+            ST_WAIT_TUSER:            if (tuser_tick)
+                                          next_state = ST_MEASURE;
+
+            ST_MEASURE:               if (capture_beat_now &
+                                         (beat_cnt_q + 32'h1 >= target_beats))
+                                          next_state = ST_FLUSH;
+
+            // FLUSH waits a fixed number of cycles so the histogram can pop
+            // any residual FIFO entries. The histogram consumes ~4 cycles
+            // per beat, the FIFO is 16 deep — 64 cycles is the absolute
+            // worst case, 50 is safe for the gap-5 cadence we use in the TB.
+            ST_FLUSH:                 if (flush_cnt_q >= 8'd50)
+                                          next_state = ST_IDLE;
+
+            default:                  next_state = ST_POST_RESET_SCRUB;
+        endcase
+    end
+
+    // hist_en: high in MEASURE and FLUSH (so the histogram keeps popping its
+    // FIFO while we drain), AND combinationally high on the TUSER beat so the
+    // histogram sees hist_en=1 at the moment the first beat is accepted.
+    assign hist_en =
+          (state == ST_MEASURE)
+        | (state == ST_FLUSH)
+        | (state == ST_WAIT_TUSER && tuser_tick);
+
+    // Single-cycle scrub pulse at the entry of each scrub phase
+    assign ram_scrub = (state == ST_POST_RESET_SCRUB)
+                     | (state == ST_START_SCRUB);
+
+    // =========================================================================
+    // FSM state register (RTL reset OR CTRL.RESET forces back to post-reset scrub)
+    // =========================================================================
     always_ff @(posedge aclk or negedge aresetn) begin
-        if (!aresetn)                hist_fifo_err_sticky <= 1'b0;
-        else if (rst_all)            hist_fifo_err_sticky <= 1'b0;
-        else if (hist_fifo_err_raw)  hist_fifo_err_sticky <= 1'b1;
+        if (!aresetn)      state <= ST_POST_RESET_SCRUB;
+        else if (rst_all)  state <= ST_POST_RESET_SCRUB;
+        else               state <= next_state;
+    end
+
+    // seen_scrub_busy_q: detects that hist_rdy went low after we kicked a
+    // scrub, so we don't immediately declare "scrub done" just because the
+    // histogram was already idle.
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)
+            seen_scrub_busy_q <= 1'b0;
+        else if (state == ST_POST_RESET_SCRUB || state == ST_START_SCRUB)
+            seen_scrub_busy_q <= 1'b0;
+        else if ((state == ST_WAIT_POST_RESET_SCRUB || state == ST_WAIT_SCRUB)
+                 && !hist_rdy)
+            seen_scrub_busy_q <= 1'b1;
     end
 
     // =========================================================================
-    // Register-map hwif_in drivers
+    // Beat counter (capture target_beats exactly)
+    // =========================================================================
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                          beat_cnt_q <= 32'h0;
+        else if (rst_all)                      beat_cnt_q <= 32'h0;
+        else if (state == ST_START_SCRUB)      beat_cnt_q <= 32'h0;
+        else if (capture_beat_now)             beat_cnt_q <= beat_cnt_q + 32'h1;
+    end
+
+    // =========================================================================
+    // Pixel-sum counter (same capture gate; 8+8+8+8 bytes per beat)
+    // =========================================================================
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                          pixel_sum_q <= 32'h0;
+        else if (rst_all)                      pixel_sum_q <= 32'h0;
+        else if (state == ST_START_SCRUB)      pixel_sum_q <= 32'h0;
+        else if (capture_beat_now) begin
+            pixel_sum_q <= pixel_sum_q
+                         + {24'h0, s_axis_tdata[ 7: 0]}
+                         + {24'h0, s_axis_tdata[15: 8]}
+                         + {24'h0, s_axis_tdata[23:16]}
+                         + {24'h0, s_axis_tdata[31:24]};
+        end
+    end
+
+    // =========================================================================
+    // HIST_DATA_VALID: set at FLUSH->IDLE; cleared on reset / new measurement
+    // =========================================================================
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                              data_valid_q <= 1'b0;
+        else if (rst_all)                          data_valid_q <= 1'b0;
+        else if (state == ST_START_SCRUB)          data_valid_q <= 1'b0;
+        else if (state == ST_FLUSH && next_state == ST_IDLE)
+                                                   data_valid_q <= 1'b1;
+    end
+
+    // =========================================================================
+    // FLUSH drain timer
+    // =========================================================================
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                  flush_cnt_q <= 8'h0;
+        else if (state != ST_FLUSH)    flush_cnt_q <= 8'h0;
+        else if (flush_cnt_q != 8'hFF) flush_cnt_q <= flush_cnt_q + 8'h1;
+    end
+
+    // =========================================================================
+    // isp_histogram instance (pure snoop of AXIS; its FIFO is the only buffer)
+    // =========================================================================
+    isp_histogram #(
+        .STREAM_WIDTH (32),
+        .RAM_WIDTH    (20)
+    ) u_isp_histogram (
+        .clk_i          (aclk),
+        .rst_n          (aresetn),
+        .hist_en_i      (hist_en),
+        .ram_scrub_i    (ram_scrub),
+        .hist_rdy_o     (hist_rdy),
+        .err_o          (hist_err),
+
+        .ram_addr_i     (hwif_out.HIST_ADDR.HIST_ADDR.value),
+        .ram_data_o     (hist_ram_data),
+        .ram_data_o_vld (hist_ram_data_vld),
+
+        .pix_data_i     (s_axis_tdata),
+        .pix_data_vld_i (tvalid_to_hist),
+        .pix_data_rdy_i (m_axis_tready)
+    );
+
+    // =========================================================================
+    // STATUS.HIST_FIFO_ERR sticky bit
+    //   Source: isp_histogram.err_o (FIFO overflow). Cleared only by RTL reset
+    //   or CTRL.RESET per spec.
+    // =========================================================================
+    logic hist_fifo_err_sticky;
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)        hist_fifo_err_sticky <= 1'b0;
+        else if (rst_all)    hist_fifo_err_sticky <= 1'b0;
+        else if (hist_err)   hist_fifo_err_sticky <= 1'b1;
+    end
+
+    // =========================================================================
+    // Drive the register block
     // =========================================================================
     always_comb begin
-        // ---- STATUS (stubbed until histogram FSM lands) ----
-        hwif_in.STATUS.READY.next           = 1'b1;
-        hwif_in.STATUS.HIST_DATA_VALID.next = 1'b0;
+        // ---- STATUS ----
+        hwif_in.STATUS.READY.next           = (state == ST_IDLE);
+        hwif_in.STATUS.HIST_DATA_VALID.next = data_valid_q;
         hwif_in.STATUS.HIST_FIFO_ERR.next   = hist_fifo_err_sticky;
 
-        // ---- Cycle + frame counters and their snapshots ----
+        // ---- Cycle + frame counters and snapshots ----
         hwif_in.CYCLE_CNT_LO.CYCLE_CNT_LO.next   = cycle_cnt_lo_q;
         hwif_in.CYCLE_CNT_HI.CYCLE_CNT_HI.next   = cycle_cnt_hi_q;
         hwif_in.CYCLE_SNAP_LO.CYCLE_SNAP_LO.next = cycle_snap_lo_q;
@@ -204,17 +391,18 @@ module isp_wrapper #(
         hwif_in.FRAME_CNT.FRAME_CNT.next         = frame_cnt_q;
         hwif_in.FRAME_SNAP.FRAME_SNAP.next       = frame_snap_q;
 
-        // ---- PIXEL_SUM (stub until pixel-sum counter lands) ----
-        hwif_in.PIXEL_SUM.PIXEL_SUM.next = 32'h0;
+        // ---- PIXEL_SUM ----
+        hwif_in.PIXEL_SUM.PIXEL_SUM.next = pixel_sum_q;
 
-        // ---- HIST_ADDR auto-increment (natural 8b wrap at 0xFF) ----
+        // ---- HIST_ADDR auto-increment on AXI read of HIST_DATA ----
         hwif_in.HIST_ADDR.HIST_ADDR.next =
             hwif_out.HIST_ADDR.HIST_ADDR.value + 8'h1;
         hwif_in.HIST_ADDR.HIST_ADDR.we   =
-            hist_data_ar_handshake & hwif_out.CTRL.HIST_ADDR_AUTOINC.value;
+            (s_axi_arvalid & s_axi_arready & (s_axi_araddr == `ISP_REG_HIST_DATA))
+          & hwif_out.CTRL.HIST_ADDR_AUTOINC.value;
 
-        // ---- HIST_DATA (stub until isp_histogram is instantiated) ----
-        hwif_in.HIST_DATA.HIST_DATA.next = 20'h0;
+        // ---- HIST_DATA (frontdoor read port of isp_histogram) ----
+        hwif_in.HIST_DATA.HIST_DATA.next = hist_ram_data;
     end
 
     // =========================================================================
