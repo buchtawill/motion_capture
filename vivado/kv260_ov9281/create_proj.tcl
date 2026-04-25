@@ -164,13 +164,19 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
 set files [list \
+ [file normalize "$origin_dir/src/hdl/isp/isp_regs_defines.svh"]\
+ [file normalize "$origin_dir/src/hdl/stream_fifo.sv"]\
  [file normalize "$origin_dir/src/hdl/isp/isp_math_top.sv"]\
  [file normalize "$origin_dir/src/hdl/isp/isp_histogram.sv"]\
  [file normalize "$origin_dir/src/hdl/isp/rdl_out/rtl/isp_regs_pkg.sv"]\
  [file normalize "$origin_dir/src/hdl/isp/rdl_out/rtl/isp_regs.sv"]\
  [file normalize "$origin_dir/src/hdl/isp/isp_math_wrapper.v"]\
-] 
+]
 add_files -norecurse -fileset $obj $files
+
+# Mark the SVH as a header so Vivado doesn't treat it as a top-level RTL module
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*isp_regs_defines.svh"]]
+set_property -name "file_type" -value "SystemVerilog Header" -objects $file_obj
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]

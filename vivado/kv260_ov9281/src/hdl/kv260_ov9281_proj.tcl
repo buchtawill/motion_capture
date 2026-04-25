@@ -38,22 +38,17 @@
 # Check file required for this script exists
 proc checkRequiredFiles { origin_dir} {
   set status true
-  set files [list \
- "[file normalize "$origin_dir/../../kv260_ov9281_proj/kv260_ov9281_proj.srcs/sources_1/bd/design_1/design_1.bd"]"\
-  ]
-  foreach ifile $files {
-    if { ![file isfile $ifile] } {
-      puts " Could not find local file $ifile "
-      set status false
-    }
-  }
 
   set files [list \
- "[file normalize "$origin_dir/../../kv260_ov9281_proj/kv260_ov9281_proj.srcs/sources_1/imports/hdl/design_1_wrapper.v"]"\
- "[file normalize "$origin_dir/concat_signals.v"]"\
- "[file normalize "$origin_dir/frame_rate_counter.sv"]"\
+ "[file normalize "$origin_dir/isp/isp_regs_defines.svh"]"\
+ "[file normalize "$origin_dir/stream_fifo.sv"]"\
+ "[file normalize "$origin_dir/isp/isp_math_top.sv"]"\
+ "[file normalize "$origin_dir/isp/isp_histogram.sv"]"\
+ "[file normalize "$origin_dir/isp/rdl_out/rtl/isp_regs_pkg.sv"]"\
+ "[file normalize "$origin_dir/isp/rdl_out/rtl/isp_regs.sv"]"\
+ "[file normalize "$origin_dir/isp/isp_math_wrapper.v"]"\
  "[file normalize "$origin_dir/../constraints/timing.xdc"]"\
- "[file normalize "$origin_dir/tb_frame_rate.sv"]"\
+ "[file normalize "$origin_dir/../bd/system.tcl"]"\
   ]
   foreach ifile $files {
     if { ![file isfile $ifile] } {
