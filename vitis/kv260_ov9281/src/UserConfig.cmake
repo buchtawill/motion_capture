@@ -28,7 +28,7 @@ set(USER_UNDEFINED_SYMBOLS
 set(USER_INCLUDE_DIRECTORIES
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/cam
-    ${CMAKE_SOURCE_DIR}/hdmi
+    ${CMAKE_SOURCE_DIR}/../../../../../vivado/kv260_ov9281/src/hdl/isp/rdl_out/sw
 )
 
 # -----------------------------------------

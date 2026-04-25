@@ -9,11 +9,15 @@
 #include "cam/pl_iic.hpp"
 #include "cam/OV9281.h"
 #include "cam/ScuGicInterruptController.h"
+#include "cam/isp_math.hpp"
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
 #define CAM_I2C_DEVID		XPAR_XIIC_0_BASEADDR
 #define VDMA_DEVID          XPAR_AXI_VDMA_0_BASEADDR
 #define VDMA_WRITE_INTR_ID  XPAR_FABRIC_AXI_VDMA_0_INTR
+#define ISP_BASEADDR        XPAR_ISP_MATH_WRAPPER_0_BASEADDR
+// Must match the AXIS clock driving isp_math_top (its cycle counter ticks here).
+#define ISP_CLOCK_FREQ_HZ   200000000
 
 #define TCA9546_ADDR        0x74
 #define TCA9546_PORT2_EN    0x04    // Bit 2 = enable port 2 (0b00000100)
@@ -52,6 +56,10 @@ int main() {
     // if(gic.init() != XST_SUCCESS) error_handler("Failed to init GIC");
     // xil_printf("INFO [kv260_ov9281_app] Successful interrupt initialization\r\n");
 
+    ISP_MATH isp(ISP_BASEADDR, ISP_CLOCK_FREQ_HZ);
+    isp.sw_reset();
+    isp.set_resolution(1280, 800);
+
     // Initialize PL i2c and route traffic to rpi connector
     PL_IIC iic(CAM_I2C_DEVID);
     if (iic.init() != XST_SUCCESS) error_handler("Failed to init i2c");
@@ -82,14 +90,47 @@ int main() {
     xil_printf("INFO [kv260_ov9281_app] VDMA Buffer base address: 0x%X\r\n", (UINTPTR)frame_buffer);
     xil_printf("INFO [kv260_ov9281_app] Initialization completed successfully\r\n");
 
+    isp_snapshot_t prev_snap = isp.snapshot_frame_and_cycle_ctr();
+
+    xil_printf("INFO [kv260_ov9281_app] Initial snapshot: frames=%u cycles=0x%08x%08x\r\n",
+               prev_snap.frame_cnt,
+               (uint32_t)(prev_snap.cycle_cnt >> 32),
+               (uint32_t)(prev_snap.cycle_cnt));
+               
     while(1){
-        // print_fps();
-        Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
-        xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n", 
-            frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
-            frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
-        );
         usleep(1000000);
+
+        // Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
+        // xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n",
+        //     frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
+        //     frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
+        // );
+
+        // FPS over the last ~1s window.
+        isp_snapshot_t cur_snap = isp.snapshot_frame_and_cycle_ctr();
+        float fps = isp.compute_fps(&prev_snap, &cur_snap);
+        prev_snap = cur_snap;
+        // xil_printf has no %f; print integer + 2 fractional digits manually.
+        int fps_int  = (int)fps;
+        int fps_frac = (int)((fps - (float)fps_int) * 100.0f);
+        if (fps_frac < 0) fps_frac = -fps_frac;
+        xil_printf("INFO [kv260_ov9281_app] FPS: %d.%02d\r\n", fps_int, fps_frac);
+
+        // Capture one frame's histogram + pixel sum and pretty-print.
+        isp_hist_t hist;
+        uint32_t   psum = 0;
+        if (isp.capture_histogram(&hist, &psum) == XST_SUCCESS) {
+            isp.print_histogram(16, 60);
+            xil_printf("INFO [kv260_ov9281_app] Pixel sum: %u\r\n", psum);
+            float avg = isp.compute_avg_brightness();
+            int avg_int  = (int)avg;
+            int avg_frac = (int)((avg - (float)avg_int) * 100.0f);
+            if (avg_frac < 0) avg_frac = -avg_frac;
+            xil_printf("INFO [kv260_ov9281_app] Avg brightness: %d.%02d\r\n", avg_int, avg_frac);
+        } else {
+            xil_printf("WARN [kv260_ov9281_app] capture_histogram failed\r\n");
+            isp.print_status();
+        }
     }
     return 0;
 }

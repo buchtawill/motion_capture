@@ -31,6 +31,13 @@ The ISP blocks are **pure snoops**: they observe the AXI-Stream between the
 MIPI CSI-2 RX subsystem and the AXI VDMA without adding any latency or
 backpressure. The datapath is wired straight through at the top level.
 
+This module is primarily designed for **8-bit pixel values**. Frame counters
+and cycle counters are **enabled by default**; histogram collection is
+**disabled by default** and must be explicitly triggered via
+`CTRL.HISTOGRAM_START`. Average pixel brightness and frame rate are computed
+in software by snapshotting the frame-count and cycle-count registers at
+known time deltas.
+
 ---
 
 ## RTL Hierarchy
@@ -76,7 +83,8 @@ the measurement FSM.
 **Datapath:** The AXI-Stream slave and master ports are wired together with
 pure `assign` statements — `tdata`, `tuser`, `tlast`, `tvalid`, and the
 backpressure `tready` are all passthrough wires. The block observes traffic
-but never holds it.
+but never holds it. `TUSER` is asserted by the MIPI CSI-2 RX Subsystem
+coincident with the first valid pixel beat of each frame.
 
 **Measurement FSM:**
 
@@ -127,6 +135,8 @@ POST_RESET_SCRUB  ──►  WAIT_POST_RESET_SCRUB  ──►  IDLE
 VRES are both non-zero, preventing a divide-by-zero in the beat target
 (`HRES × VRES / 4`). The beat target also gates exactly how many beats
 reach the histogram FIFO even if new frames arrive before the FIFO drains.
+Writing `HISTOGRAM_START` also immediately de-asserts `HIST_DATA_VALID`; it
+is ignored if `STATUS.READY = 0` (scrub in progress or measurement running).
 
 **HIST_FIFO_ERR:** If `isp_histogram` asserts `err_o` (FIFO overflow), this
 block latches the error sticky into `STATUS.HIST_FIFO_ERR`. Clears only on
@@ -257,7 +267,7 @@ Base address set by the Vivado block design. 11-bit address space.
 | `0x01C` | CYCLE_SNAP_HI | RO | `0` | Cycle counter snapshot, high 32 bits. |
 | `0x020` | FRAME_CNT | RO | `0` | Frame counter (increments on TUSER & TVALID & TREADY). |
 | `0x024` | FRAME_SNAP | RO | `0` | Frame counter snapshot (latched by CTRL.SNAPSHOT). |
-| `0x028` | PIXEL_SUM | RO | `0` | Sum of all pixel values from the last measurement. |
+| `0x028` | PIXEL_SUM | RO | `0` | Sum of all 8-bit pixel values from the last measurement. Redundant for a 256-bin histogram (sum equals Σ bin[i]×i), but provided as a convenience. |
 | `0x02C` | HIST_ADDR | R/W | `0` | Histogram bin index (8-bit). Auto-increments on HIST_DATA read. |
 | `0x030` | HIST_DATA | RO | `0` | Histogram bin count at HIST_ADDR (20-bit). |
 
@@ -266,7 +276,7 @@ Base address set by the Vivado block design. 11-bit address space.
 | Bit | Name | Type | Description |
 |---|---|---|---|
 | 0 | RESET | W-pulse | SW reset. Clears counters, kicks scrub. Does not reset HRES/VRES. |
-| 1 | HISTOGRAM_START | W-pulse | Begin measurement. Ignored if STATUS.READY=0 or HRES/VRES=0. |
+| 1 | HISTOGRAM_START | W-pulse | Begin measurement. Immediately de-asserts HIST_DATA_VALID and issues a RAM scrub. Ignored if STATUS.READY=0 or HRES/VRES=0. |
 | 2 | SNAPSHOT | W-pulse | Latch coherent cycle+frame snapshot. |
 | 3 | HIST_ADDR_AUTOINC | R/W | Auto-increment HIST_ADDR after each HIST_DATA read (default 1). |
 | 4 | FRAME_CNT_RESET | W-pulse | Reset frame counter and FRAME_SNAP only. |
