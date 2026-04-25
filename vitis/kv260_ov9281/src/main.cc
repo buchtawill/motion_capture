@@ -71,6 +71,7 @@ int main() {
     cam.reset();
     if (cam.init() != XST_SUCCESS) error_handler("Failed to init ov9281");
     if (cam.apply_default_mode() != XST_SUCCESS) error_handler("Failed to apply camera mode");
+    // cam.enable_test_pattern();
 
     // Init MIPI CSI Receiver
     if(init_csi_subsystem() != XST_SUCCESS) error_handler("Failed to init CSI subsystem");
@@ -96,6 +97,7 @@ int main() {
                prev_snap.frame_cnt,
                (uint32_t)(prev_snap.cycle_cnt >> 32),
                (uint32_t)(prev_snap.cycle_cnt));
+        usleep(5000000);
 
     while(1){
         usleep(1000000);
@@ -124,10 +126,28 @@ int main() {
             int avg_frac = (int)((avg - (float)avg_int) * 100.0f);
             if (avg_frac < 0) avg_frac = -avg_frac;
             xil_printf("INFO [kv260_ov9281_app] Avg brightness: %d.%02d\r\n", avg_int, avg_frac);
+
+            int min_pix = -1, max_pix = -1;
+            for (int i = 0; i < 256; i++) {
+                if (hist[i] != 0) {
+                    if (min_pix < 0) min_pix = i;
+                    max_pix = i;
+                }
+            }
+            if (min_pix < 0) {
+                xil_printf("INFO [kv260_ov9281_app] Histogram empty (no pixels counted)\r\n");
+            } else {
+                xil_printf("INFO [kv260_ov9281_app] Pixel min/max: %d / %d\r\n", min_pix, max_pix);
+            }
         } else {
             xil_printf("WARN [kv260_ov9281_app] capture_histogram failed\r\n");
             isp.print_status();
         }
+        Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
+        xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n",
+            frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
+            frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
+        );
     }
     return 0;
 }
@@ -181,9 +201,3 @@ static int init_iic_routing(PL_IIC& iic) {
     xil_printf("INFO [init_iic_routing] TCA9546A routing OK (readback 0x%02X)\r\n", readback);
     return XST_SUCCESS;
 }
-
-// Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
-        // xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n",
-        //     frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
-        //     frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
-        // );
