@@ -1,5 +1,5 @@
-#ifndef ISP_MATH_HPP
-#define ISP_MATH_HPP
+#ifndef ISP_STATS_HPP
+#define ISP_STATS_HPP
 
 #include "xstatus.h"
 #include "isp_regs.h"
@@ -12,13 +12,13 @@ typedef struct {
     uint32_t frame_cnt;
 } isp_snapshot_t;
 
-class ISP_MATH {
+class IspStats {
 
 public:
 
     static constexpr uint16_t NUM_BINS = 256;
 
-    ISP_MATH(uint32_t base_addr, uint32_t clock_freq_hz);
+    IspStats(uint32_t base_addr, uint32_t clock_freq_hz);
 
     // ---- One-shot init sanity ----------------------------------------------
 

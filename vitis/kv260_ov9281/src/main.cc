@@ -9,7 +9,7 @@
 #include "cam/pl_iic.hpp"
 #include "cam/OV9281.h"
 #include "cam/ScuGicInterruptController.h"
-#include "cam/isp_math.hpp"
+#include "cam/isp_stats.hpp"
 
 #define IRPT_CTL_DEVID 		XPAR_XSCUGIC_0_BASEADDR
 #define CAM_I2C_DEVID		XPAR_XIIC_0_BASEADDR
@@ -56,7 +56,7 @@ int main() {
     // if(gic.init() != XST_SUCCESS) error_handler("Failed to init GIC");
     // xil_printf("INFO [kv260_ov9281_app] Successful interrupt initialization\r\n");
 
-    ISP_MATH isp(ISP_BASEADDR, ISP_CLOCK_FREQ_HZ);
+    IspStats isp(ISP_BASEADDR, ISP_CLOCK_FREQ_HZ);
     isp.sw_reset();
     isp.set_resolution(1280, 800);
 
@@ -96,15 +96,12 @@ int main() {
                prev_snap.frame_cnt,
                (uint32_t)(prev_snap.cycle_cnt >> 32),
                (uint32_t)(prev_snap.cycle_cnt));
-               
+
     while(1){
         usleep(1000000);
 
-        // Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
-        // xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n",
-        //     frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
-        //     frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
-        // );
+        // ANSI clear screen + home cursor so each refresh paints over a blank screen.
+        xil_printf("\x1b[2J\x1b[H");
 
         // FPS over the last ~1s window.
         isp_snapshot_t cur_snap = isp.snapshot_frame_and_cycle_ctr();
@@ -120,7 +117,7 @@ int main() {
         isp_hist_t hist;
         uint32_t   psum = 0;
         if (isp.capture_histogram(&hist, &psum) == XST_SUCCESS) {
-            isp.print_histogram(16, 60);
+            isp.print_histogram(16, 75);
             xil_printf("INFO [kv260_ov9281_app] Pixel sum: %u\r\n", psum);
             float avg = isp.compute_avg_brightness();
             int avg_int  = (int)avg;
@@ -184,3 +181,9 @@ static int init_iic_routing(PL_IIC& iic) {
     xil_printf("INFO [init_iic_routing] TCA9546A routing OK (readback 0x%02X)\r\n", readback);
     return XST_SUCCESS;
 }
+
+// Xil_DCacheInvalidateRange((INTPTR)frame_buffer, FB_SIZE_BYTES);
+        // xil_printf("INFO [kv260_ov9281_app] Frame buffer[0][0][0-7]: 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r\n",
+        //     frame_buffer[0][0][0], frame_buffer[0][0][1], frame_buffer[0][0][2], frame_buffer[0][0][3],
+        //     frame_buffer[0][0][4], frame_buffer[0][0][5], frame_buffer[0][0][6], frame_buffer[0][0][7]
+        // );

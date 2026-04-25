@@ -1,4 +1,4 @@
-#include "isp_math.hpp"
+#include "isp_stats.hpp"
 #include "xil_printf.h"
 
 namespace {
@@ -12,17 +12,17 @@ inline void pulse_ctrl(volatile isp_regs_t* r, uint32_t pulse_bm) {
 } // namespace
 
 
-ISP_MATH::ISP_MATH(uint32_t base_addr, uint32_t clock_freq_hz)
+IspStats::IspStats(uint32_t base_addr, uint32_t clock_freq_hz)
     : _base_addr(base_addr),
       _clock_freq_hz(clock_freq_hz)
 {
     if (probe() != XST_SUCCESS) {
-        xil_printf("[ISP_MATH] WARN: probe() failed at base 0x%08x\r\n",
+        xil_printf("[IspStats] WARN: probe() failed at base 0x%08x\r\n",
                    base_addr);
     }
 }
 
-XStatus ISP_MATH::probe() {
+XStatus IspStats::probe() {
     uint16_t hres, vres;
     get_resolution(&hres, &vres);
     if (hres == 1280 && vres == 800) {
@@ -33,19 +33,19 @@ XStatus ISP_MATH::probe() {
 
 // ---- Resets / control ------------------------------------------------------
 
-void ISP_MATH::sw_reset() {
+void IspStats::sw_reset() {
     pulse_ctrl(regs(), ISP_REGS__CTRL_REG__RESET_bm);
 }
 
-void ISP_MATH::reset_frame_counter() {
+void IspStats::reset_frame_counter() {
     pulse_ctrl(regs(), ISP_REGS__CTRL_REG__FRAME_CNT_RESET_bm);
 }
 
-void ISP_MATH::reset_cycle_counter() {
+void IspStats::reset_cycle_counter() {
     pulse_ctrl(regs(), ISP_REGS__CTRL_REG__CYCLE_CNT_RESET_bm);
 }
 
-void ISP_MATH::set_hist_addr_autoinc(bool enable) {
+void IspStats::set_hist_addr_autoinc(bool enable) {
     volatile isp_regs_t* r = regs();
     uint32_t v = r->CTRL & ~ISP_REGS__CTRL_REG__HIST_ADDR_AUTOINC_bm;
     if (enable) v |= ISP_REGS__CTRL_REG__HIST_ADDR_AUTOINC_bm;
@@ -54,19 +54,19 @@ void ISP_MATH::set_hist_addr_autoinc(bool enable) {
 
 // ---- Resolution ------------------------------------------------------------
 
-void ISP_MATH::set_resolution(uint16_t hres, uint16_t vres) {
+void IspStats::set_resolution(uint16_t hres, uint16_t vres) {
     regs()->HRES = hres;
     regs()->VRES = vres;
 }
 
-void ISP_MATH::get_resolution(uint16_t* hres, uint16_t* vres) {
+void IspStats::get_resolution(uint16_t* hres, uint16_t* vres) {
     if (hres) *hres = (uint16_t)(regs()->HRES & ISP_REGS__HRES_REG__HRES_bm);
     if (vres) *vres = (uint16_t)(regs()->VRES & ISP_REGS__VRES_REG__VRES_bm);
 }
 
 // ---- Counters / snapshot ---------------------------------------------------
 
-isp_snapshot_t ISP_MATH::snapshot_frame_and_cycle_ctr() {
+isp_snapshot_t IspStats::snapshot_frame_and_cycle_ctr() {
     volatile isp_regs_t* r = regs();
     pulse_ctrl(r, ISP_REGS__CTRL_REG__SNAPSHOT_bm);
 
@@ -78,7 +78,7 @@ isp_snapshot_t ISP_MATH::snapshot_frame_and_cycle_ctr() {
     return s;
 }
 
-float ISP_MATH::compute_fps(const isp_snapshot_t* t1, const isp_snapshot_t* t2) {
+float IspStats::compute_fps(const isp_snapshot_t* t1, const isp_snapshot_t* t2) {
     if (!t1 || !t2) return 0.0f;
     uint32_t frame_delta = t2->frame_cnt - t1->frame_cnt;
     uint64_t cycle_delta = t2->cycle_cnt - t1->cycle_cnt;
@@ -88,21 +88,21 @@ float ISP_MATH::compute_fps(const isp_snapshot_t* t1, const isp_snapshot_t* t2) 
 
 // ---- Status peeks ----------------------------------------------------------
 
-bool ISP_MATH::is_ready() {
+bool IspStats::is_ready() {
     return (regs()->STATUS & ISP_REGS__STATUS_REG__READY_bm) != 0;
 }
 
-bool ISP_MATH::is_hist_data_valid() {
+bool IspStats::is_hist_data_valid() {
     return (regs()->STATUS & ISP_REGS__STATUS_REG__HIST_DATA_VALID_bm) != 0;
 }
 
-bool ISP_MATH::is_hist_fifo_err() {
+bool IspStats::is_hist_fifo_err() {
     return (regs()->STATUS & ISP_REGS__STATUS_REG__HIST_FIFO_ERR_bm) != 0;
 }
 
 // ---- Histogram measurement -------------------------------------------------
 
-XStatus ISP_MATH::start_histogram() {
+XStatus IspStats::start_histogram() {
     uint16_t hres, vres;
     get_resolution(&hres, &vres);
     if (hres == 0 || vres == 0) return XST_FAILURE;
@@ -111,21 +111,21 @@ XStatus ISP_MATH::start_histogram() {
     return XST_SUCCESS;
 }
 
-XStatus ISP_MATH::poll_histogram_ready() {
+XStatus IspStats::poll_histogram_ready() {
     for (uint32_t i = 0; i < _max_polls; i++) {
         if (is_ready()) return XST_SUCCESS;
     }
     return XST_FAILURE;
 }
 
-XStatus ISP_MATH::poll_histogram_valid() {
+XStatus IspStats::poll_histogram_valid() {
     for (uint32_t i = 0; i < _max_polls; i++) {
         if (is_hist_data_valid()) return XST_SUCCESS;
     }
     return XST_FAILURE;
 }
 
-XStatus ISP_MATH::read_hist_bin(uint8_t addr, uint32_t* data) {
+XStatus IspStats::read_hist_bin(uint8_t addr, uint32_t* data) {
     if (!data) return XST_FAILURE;
     if (!is_hist_data_valid()) return XST_FAILURE;
 
@@ -142,7 +142,7 @@ XStatus ISP_MATH::read_hist_bin(uint8_t addr, uint32_t* data) {
     return XST_SUCCESS;
 }
 
-XStatus ISP_MATH::dump_histogram(isp_hist_t* hist_data) {
+XStatus IspStats::dump_histogram(isp_hist_t* hist_data) {
     if (!hist_data) return XST_FAILURE;
     if (!is_hist_data_valid()) return XST_FAILURE;
 
@@ -162,11 +162,11 @@ XStatus ISP_MATH::dump_histogram(isp_hist_t* hist_data) {
 
 // ---- Pixel sum / brightness ------------------------------------------------
 
-uint32_t ISP_MATH::read_pixel_sum() {
+uint32_t IspStats::read_pixel_sum() {
     return regs()->PIXEL_SUM;
 }
 
-float ISP_MATH::compute_avg_brightness() {
+float IspStats::compute_avg_brightness() {
     uint16_t hres, vres;
     get_resolution(&hres, &vres);
     uint32_t npix = (uint32_t)hres * (uint32_t)vres;
@@ -176,7 +176,7 @@ float ISP_MATH::compute_avg_brightness() {
 
 // ---- One-shot --------------------------------------------------------------
 
-XStatus ISP_MATH::capture_histogram(isp_hist_t* hist_out, uint32_t* pixel_sum_out) {
+XStatus IspStats::capture_histogram(isp_hist_t* hist_out, uint32_t* pixel_sum_out) {
     if (!hist_out) return XST_FAILURE;
     if (start_histogram()      != XST_SUCCESS) return XST_FAILURE;
     if (poll_histogram_valid() != XST_SUCCESS) return XST_FAILURE;
@@ -187,11 +187,11 @@ XStatus ISP_MATH::capture_histogram(isp_hist_t* hist_out, uint32_t* pixel_sum_ou
 
 // ---- Diagnostics -----------------------------------------------------------
 
-void ISP_MATH::set_max_polls(uint32_t n) {
+void IspStats::set_max_polls(uint32_t n) {
     _max_polls = n;
 }
 
-void ISP_MATH::print_status() {
+void IspStats::print_status() {
     volatile isp_regs_t* r = regs();
     uint32_t ctrl   = r->CTRL;
     uint32_t status = r->STATUS;
@@ -202,7 +202,7 @@ void ISP_MATH::print_status() {
     uint32_t fcnt   = r->FRAME_CNT;
     uint32_t psum   = r->PIXEL_SUM;
 
-    xil_printf("ISP_MATH @ 0x%08x\r\n", _base_addr);
+    xil_printf("IspStats @ 0x%08x\r\n", _base_addr);
     xil_printf("  CTRL    : 0x%08x (autoinc=%d)\r\n",
                ctrl,
                (ctrl & ISP_REGS__CTRL_REG__HIST_ADDR_AUTOINC_bm) ? 1 : 0);
@@ -218,11 +218,11 @@ void ISP_MATH::print_status() {
     xil_printf("  PIX_SUM : %u\r\n", psum);
 }
 
-XStatus ISP_MATH::print_histogram(uint16_t num_bins, uint16_t bar_width) {
+XStatus IspStats::print_histogram(uint16_t num_bins, uint16_t bar_width) {
     // num_bins must divide 256 evenly: 1,2,4,8,16,32,64,128,256.
     if (num_bins == 0 || num_bins > NUM_BINS ||
         (NUM_BINS % num_bins) != 0) {
-        xil_printf("[ISP_MATH] print_histogram: num_bins=%u invalid (must divide 256)\r\n",
+        xil_printf("[IspStats] print_histogram: num_bins=%u invalid (must divide 256)\r\n",
                    num_bins);
         return XST_FAILURE;
     }
@@ -230,7 +230,7 @@ XStatus ISP_MATH::print_histogram(uint16_t num_bins, uint16_t bar_width) {
 
     isp_hist_t hist;
     if (dump_histogram(&hist) != XST_SUCCESS) {
-        xil_printf("[ISP_MATH] print_histogram: histogram not valid\r\n");
+        xil_printf("[IspStats] print_histogram: histogram not valid\r\n");
         return XST_FAILURE;
     }
 
