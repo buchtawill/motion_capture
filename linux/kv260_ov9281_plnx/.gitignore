@@ -1,0 +1,15 @@
+
+*/*/config.old
+*/*/rootfs_config.old
+build/
+hardware
+project-spec/hw-description
+project-spec/configs/.Xil
+images
+components
+pre-built
+.petalinux/*
+!.petalinux/metadata
+*.o
+*.jou
+*.log
