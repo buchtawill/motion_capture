@@ -11,7 +11,7 @@ IMAGES_DIR := images/linux
 all: build package deploy
 
 config:
-	petalinux-config
+	petalinux-config --get-hw-description ./../../vivado/kv260_ov9281/kv260_ov9281_proj/kv260_ov9281_proj.xsa
 
 build:
 	petalinux-build
@@ -27,12 +27,6 @@ deploy-rootfs: $(IMAGES_DIR)/rootfs.tar.gz
 	@test -d $(NFS_DIR) || { echo "NFS_DIR $(NFS_DIR) does not exist"; exit 1; }
 	sudo rm -rf $(NFS_DIR)/*
 	sudo tar xzf $(IMAGES_DIR)/rootfs.tar.gz -C $(NFS_DIR)
-
-deploy-boot:
-	@test -d $(BOOT_DEST) || { echo "BOOT_DEST $(BOOT_DEST) does not exist"; exit 1; }
-	cp $(IMAGES_DIR)/BOOT.BIN  $(BOOT_DEST)/
-	cp $(IMAGES_DIR)/image.ub  $(BOOT_DEST)/
-	cp $(IMAGES_DIR)/boot.scr  $(BOOT_DEST)/
 
 clean:
 	petalinux-build -x mrproper

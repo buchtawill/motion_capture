@@ -5,6 +5,8 @@ build/
 hardware
 project-spec/hw-description
 project-spec/configs/.Xil
+project-spec/configs/*.log
+project-spec/configs/*.old
 images
 components
 pre-built
