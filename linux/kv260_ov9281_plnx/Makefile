@@ -32,6 +32,11 @@ deploy-rootfs: $(IMAGES_DIR)/rootfs.tar.gz
 	sudo rm -rf $(NFS_DIR)/*
 	sudo tar xzf $(IMAGES_DIR)/rootfs.tar.gz -C $(NFS_DIR)
 
+deploy-boot:
+	@test -f /tftpboot/pxelinux.cfg/default \
+		|| { echo "/tftpboot/pxelinux.cfg/default not found"; exit 1; }
+	sed -i '/^[[:space:]]*INITRD\b/Id' /tftpboot/pxelinux.cfg/default
+
 clean:
 	petalinux-build -x distclean
-	rm -rf images
+	rm -rf /tftpboot/*

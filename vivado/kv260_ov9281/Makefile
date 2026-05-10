@@ -1,24 +1,37 @@
 # Use case: if you build, you also regenerate the project directory
 
+PROJ_DIR := kv260_ov9281_proj
+BIT      := $(PROJ_DIR)/$(PROJ_DIR).bit
+BIT_BIN  := $(PROJ_DIR)/$(PROJ_DIR).bit.bin
+BIF      := $(PROJ_DIR)/fpgautil.bif
+
 all:
-	@echo "project: make the project"
-	@echo "build:   Run synthesis, implementation, bitstream"
+	@echo "project:   make the project"
+	@echo "bitstream: Run synthesis, implementation, bitstream"
+	@echo "bit-bin:   Generate .bit.bin for fpgautil -b on KV260"
 
 clean:
 	rm -f vivado*.jou vivado*.log
-	rm -rf .Xil NA kv260_ov9281_proj
+	rm -rf .Xil NA $(PROJ_DIR)
 
 # Target is the directory itself. MAKE will check if directory exists.
-kv260_ov9281_proj:
-	@if [ ! -d "kv260_ov9281_proj" ]; then \
+$(PROJ_DIR):
+	@if [ ! -d "$(PROJ_DIR)" ]; then \
 		vivado -mode batch -source create_proj.tcl; \
 	else \
-		echo "Project directory 'kv260_ov9281_proj' already exists. Skipping creation."; \
+		echo "Project directory '$(PROJ_DIR)' already exists. Skipping creation."; \
 	fi
 
-proj: clean kv260_ov9281_proj
+proj: clean $(PROJ_DIR)
 
-bitstream: kv260_ov9281_proj
+bitstream: $(PROJ_DIR)
 	vivado -mode batch -source export_bitstream.tcl
 
-.PHONY: all clean project build
+bit-bin: $(BIT_BIN)
+
+$(BIT_BIN): $(BIT)
+	@printf 'all:\n{\n    [destination_device = pl] $(notdir $(BIT))\n}\n' > $(BIF)
+	cd $(PROJ_DIR) && bootgen -arch zynqmp -image $(notdir $(BIF)) -process_bitstream bin -w on
+	@echo "Generated $(BIT_BIN)"
+
+.PHONY: all clean proj bitstream bit-bin

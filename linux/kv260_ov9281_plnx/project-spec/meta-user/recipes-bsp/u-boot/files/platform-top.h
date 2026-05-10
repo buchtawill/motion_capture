@@ -14,3 +14,9 @@
 #if defined(CONFIG_ARCH_VERSAL_NET)
 #include <configs/xilinx_versal_net.h>
 #endif
+
+#ifdef CONFIG_EXTRA_ENV_SETTINGS
+#undef CONFIG_EXTRA_ENV_SETTINGS
+#endif
+#define CFG_EXTRA_ENV_SETTINGS \
+    "serverip=10.0.0.70\0"

@@ -1,6 +1,6 @@
 /include/ "system-conf.dtsi"
 / {
     chosen {
-        bootargs = "earlycon console=ttyPS1,115200 root=/dev/nfs rootfstype=nfs nfsroot=10.0.0.32:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 ip=dhcp rw cma=32M";
+        bootargs = "earlycon console=ttyPS1,115200 root=/dev/nfs rootfstype=nfs nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 ip=dhcp rw cma=32M";
     };
 };
