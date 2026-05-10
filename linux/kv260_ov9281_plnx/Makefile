@@ -34,3 +34,4 @@ deploy-rootfs: $(IMAGES_DIR)/rootfs.tar.gz
 
 clean:
 	petalinux-build -x distclean
+	rm -rf images

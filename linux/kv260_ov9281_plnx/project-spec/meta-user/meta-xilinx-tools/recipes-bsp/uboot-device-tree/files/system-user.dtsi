@@ -1,3 +1,28 @@
 /include/ "system-conf.dtsi"
+
+&gem3 {
+    status = "okay";
+    phy-handle = <&phy0>;
+    phy-mode = "rgmii-id";
+    phy-reset-gpio = <&gpio 38 0>;
+    phy-reset-active-low;
+
+    mdio {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        phy0: ethernet-phy@1 {
+            compatible = "ti,dp83867";
+            device_type = "ethernet-phy";
+            #phy-cells = <1>;
+            reg = <1>;
+            ti,rx-internal-delay = <0x8>;
+            ti,tx-internal-delay = <0xa>;
+            ti,fifo-depth = <0x1>;
+            ti,dp83867-rxctrl-strap-quirk;
+        };
+    };
+};
+
 / {
 };

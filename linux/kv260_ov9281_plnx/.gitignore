@@ -6,11 +6,12 @@ hardware
 project-spec/hw-description
 project-spec/configs/.Xil
 project-spec/configs/*.log
+project-spec/configs/.statistics
 project-spec/configs/*.old
 images
 components
 pre-built
-.petalinux/*
+.petalinux
 !.petalinux/metadata
 *.o
 *.jou
