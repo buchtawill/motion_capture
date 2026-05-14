@@ -139,3 +139,115 @@ Key tasks: `send_beat`, `wait_drain`, `wait_scrub_done`, `read_bin_ram`, `check_
 `export_bitstream.tcl` — Runs synthesis → implementation → bitstream generation → exports `.xsa` for Vitis.
 
 `vitis/<proj>/create_vitis.py` — Python script run by Vitis CLI to create the platform component (from `.xsa`) and application component, then build the ELF.
+
+## Linux / PetaLinux (KV260 variant)
+
+The `kv260_ov9281` variant has a second, parallel software path: PetaLinux 2024.1 instead of bare-metal Vitis. Same FPGA bitstream; different OS on the A53.
+
+**Pipeline (Linux view):**
+```
+OV9281 ──I2C config──► axi_iic_0 (0xa0020000)
+       └─MIPI CSI-2───► mipi_csi2_rx_subsyst (0xa0010000) ──► [isp_math_wrapper, transparent] ──► axi_vdma_0 (0xa0000000) ──► DDR
+                                                                       │
+                                                                  AXI-Lite + UIO (histogram stats, controlled separately from V4L2)
+```
+
+The ISP wrapper is **passive** — it snoops the AXI-Stream and exposes histogram registers, but does not modify TDATA/TVALID/TLAST/TUSER/TKEEP. For V4L2's media graph, wire CSI output → VDMA directly and skip ISP. Histogram driven by userspace via UIO (`generic-uio` compatible, blocking `read()` returns on interrupt).
+
+### Project layout
+
+| Path | Purpose |
+|---|---|
+| `linux/kv260_ov9281_plnx/` | PetaLinux project root |
+| `linux/kv260_ov9281_plnx/Makefile` | Wraps `petalinux-config`/`-build`/`-package`/deploy. `make all` = build + package + deploy. |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/` | All user customizations — commit this. |
+| `linux/kv260_ov9281_plnx/components/plnx_workspace/device-tree/device-tree/pl.dtsi` | **Auto-generated from .xsa — never edit.** Regenerated on `petalinux-config --get-hw-description`. |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi` | Linux device-tree overrides (bootargs, OV9281 node, endpoint wiring). |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/meta-xilinx-tools/recipes-bsp/uboot-device-tree/files/system-user.dtsi` | U-boot device-tree overrides (GEM3 ethernet enable, DP83867 PHY). |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/u-boot/files/platform-top.h` | U-boot env compile-ins. Uses `CFG_EXTRA_ENV_SETTINGS` (renamed from `CONFIG_EXTRA_ENV_SETTINGS` in u-boot 2022.07+). |
+| `linux/nfs-mount-point/` | NFS-exported rootfs. Owned by root after `sudo tar xzf images/linux/rootfs.tar.gz`. NFS server configured with `no_root_squash` in `/etc/exports`. |
+
+### Boot flow
+
+- **BOOT.BIN** (FSBL + PMU firmware + u-boot) loaded from SD or QSPI. Hardware-aware: regenerate after any XSA change.
+- **image.ub** (kernel + DT + initramfs) loaded by u-boot via TFTP from `/srv/tftp` on the host (NOT `/tftpboot` — tftpd-hpa's default).
+- **Kernel** mounts root over NFS via bootargs:
+  ```
+  earlycon console=ttyPS1,115200 root=/dev/nfs rootfstype=nfs \
+  nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 \
+  ip=dhcp rw cma=32M
+  ```
+  Set in Linux `system-user.dtsi` under `chosen { bootargs = "..."; };`.
+- **U-boot env** (`serverip=10.0.0.70`) compiled into binary via `CFG_EXTRA_ENV_SETTINGS` in `platform-top.h`. KV260 BSP **ships with GEM disabled** in u-boot — the u-boot `system-user.dtsi` re-enables `gem3` with TI DP83867 PHY config and MIO38 reset GPIO.
+
+### Build / iterate
+
+```bash
+cd linux/kv260_ov9281_plnx
+make config        # petalinux-config --get-hw-description ../../vivado/kv260_ov9281/kv260_ov9281_proj/
+make build         # petalinux-build (incremental)
+make package       # repacks BOOT.BIN (FSBL + bitstream + u-boot)
+make deploy        # extracts rootfs to NFS dir (sudo), removes INITRD from /tftpboot/pxelinux.cfg/default
+make all           # build + package + deploy
+```
+
+Single-component rebuild: `petalinux-build -c u-boot` / `-c device-tree` / `-c kernel`. Force from scratch: append `-x cleansstate` (two s's — common typo). After an XSA change, **always** rerun `make config` first; FSBL and PL DTSI are derived from it. Bitstream changes also require `make package` to repack BOOT.BIN.
+
+Passwordless sudo for the deploy targets is configured in `/etc/sudoers.d/petalinux-deploy`.
+
+### Camera driver
+
+Use the **mainline `ov9282.c`** driver (`drivers/media/i2c/ov9282.c`). It probes the chip ID and supports OV9281 silicon at runtime, but:
+
+- **DT compatible must be `"ovti,ov9282"`** — the driver's `of_match_table` does NOT also match `"ovti,ov9281"`, even though the silicon does. Wrong compatible = driver never binds.
+- Required DT properties (per `Documentation/devicetree/bindings/media/i2c/ovti,ov9282.yaml`): `compatible`, `reg`, `clocks` (`clock-names = "inclk"`), `port`. Supplies and reset-gpios are optional.
+- The `clocks` value is used for PLL math (`clk_get_rate()`). Wrong frequency = wrong line rate, not a probe failure.
+- Driver exposes `MEDIA_BUS_FMT_Y10_1X10` and `MEDIA_BUS_FMT_Y8_1X8` (mono). RAW10 mono may require Xilinx ISI/IPI driver patches if format negotiation fails downstream.
+
+ArduCAM's out-of-tree OV9281 driver (`github.com/ArduCAM/ov9281_driver`, Rockchip-derived) is an alternative reference — it has explicit power sequencing (8192 reference-clock-cycle delay after XSHUTDOWN before first I2C) and three preset modes (1280×800, 1280×720, 640×400). If the mainline driver's register init causes image artifacts on OV9281 silicon, this is the fallback.
+
+**KV260 camera power/clock note:** The IAS connector's camera power and ref clock are gated through an on-SOM **TCA6408A I2C GPIO expander** (`CONFIG_GPIO_PCA953X`). If the OV9281 doesn't enumerate on I2C at all, either expose the expander in DT and reference its GPIOs from a regulator/clock binding, or flip the relevant pins from userspace (`gpioset`) before launching V4L2.
+
+### Required kernel configs
+
+Enable in `petalinux-config -c kernel`. Use `/` search to confirm exact symbol names — Xilinx fork has renamed several over kernel versions.
+
+```
+CONFIG_MEDIA_CONTROLLER=y          # enable first — gates submenus
+CONFIG_VIDEO_V4L2_SUBDEV_API=y     # ditto
+CONFIG_VIDEO_OV9282=m              # Multimedia → Media ancillary → Camera sensor devices
+CONFIG_VIDEO_XILINX=m
+CONFIG_VIDEO_XILINX_CSI2RXSS=m
+CONFIG_VIDEO_XILINX_DMA=m          # V4L2 wrapper around VDMA (verify exact symbol)
+CONFIG_XILINX_DMA=m                # dmaengine backend
+CONFIG_I2C_XILINX=m
+CONFIG_GPIO_PCA953X=m              # TCA6408A on KV260 SOM
+CONFIG_UIO_PDRV_GENIRQ=m           # for ISP histogram via generic-uio
+```
+
+### V4L2 capture flow (userspace)
+
+```
+open(/dev/videoN)
+  → VIDIOC_S_FMT       (negotiate format + resolution)
+  → VIDIOC_REQBUFS     (allocate buffers, mmap)
+  → VIDIOC_QBUF × N    (queue all buffers)
+  → VIDIOC_STREAMON
+  → loop: VIDIOC_DQBUF → process frame → VIDIOC_QBUF
+  → VIDIOC_STREAMOFF
+```
+
+Sanity check the media graph with `media-ctl -p` and `v4l2-ctl --list-devices` before opening a node.
+
+### Gotchas
+
+- **PL clocks gated after `fpgautil` reload.** Check with `cat /sys/kernel/debug/clk/clk_summary | grep pl`. If PL0 is off, either reference the PL clock in DT (clean) or kick it with `devmem 0xFF5E00C0 32 0x01010800` (dirty).
+- **Xilinx pipeline drivers may demand stub ops.** Per Virtana writeup, you may need to add empty `link_setup` media entity op and `s_power` subdev op stubs to the sensor driver if the Xilinx subgraph code unconditionally calls them.
+- **`/tftpboot` vs `/srv/tftp`.** tftpd-hpa serves from `/srv/tftp` by default. Either edit `/etc/default/tftpd-hpa` to point at `/tftpboot`, or update `make deploy-boot` to write into `/srv/tftp`.
+- **Netplan + cloud-init.** `/etc/netplan/50-cloud-init.yaml` can get rewritten on boot; disable cloud-init network management with `network: {config: disabled}` in `/etc/cloud/cloud.cfg.d/99-disable-network.cfg`.
+- **`petalinux-build -x mrproper` deletes configs.** Use `distclean` for routine cleaning. Incremental builds are usually sufficient.
+
+### Source control (Linux side)
+
+Commit: `project-spec/`, `.xsa`, helper scripts, Makefile.
+Ignore: `build/`, `images/`, `components/`, `project-spec/hw-description/` (all regenerated from `.xsa`).

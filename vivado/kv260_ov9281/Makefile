@@ -30,8 +30,8 @@ bitstream: $(PROJ_DIR)
 bit-bin: $(BIT_BIN)
 
 $(BIT_BIN): $(BIT)
-	@printf 'all:\n{\n    [destination_device = pl] $(notdir $(BIT))\n}\n' > $(BIF)
-	cd $(PROJ_DIR) && bootgen -arch zynqmp -image $(notdir $(BIF)) -process_bitstream bin -w on
+	@printf 'all:\n{\n $(notdir $(BIT))\n}\n' > $(BIF)
+	cd $(PROJ_DIR) && bootgen -arch zynqmp -image $(notdir $(BIF)) -process_bitstream bin 
 	@echo "Generated $(BIT_BIN)"
 
 .PHONY: all clean proj bitstream bit-bin
