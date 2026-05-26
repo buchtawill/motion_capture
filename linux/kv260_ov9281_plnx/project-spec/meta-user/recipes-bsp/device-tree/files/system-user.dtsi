@@ -2,13 +2,7 @@
 
 / {
     chosen {
-        /* fw_devlink=permissive: this kernel has no CONFIG_OF_FPGA_REGION driver,
-         * so the fpga_full "fpga-region" node never binds / never becomes a
-         * "ready" supplier. With fw_devlink=on (default), every PL device the
-         * overlay creates is a consumer of that region and hangs forever in
-         * deferred-probe ("supplier fpga-region not ready"). permissive lets
-         * them probe anyway. (Bitstream still loads via the FPGA *manager*.) */
-        bootargs = "earlycon console=ttyPS1,115200 clk_ignore_unused fw_devlink=permissive root=/dev/nfs rootfstype=nfs nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 ip=dhcp rw cma=32M";
+        bootargs = "earlycon console=ttyPS1,115200 clk_ignore_unused root=/dev/nfs rootfstype=nfs nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 ip=dhcp rw cma=32M";
     };
 };
 

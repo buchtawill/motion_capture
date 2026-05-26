@@ -162,7 +162,9 @@ The ISP wrapper is **passive** — it snoops the AXI-Stream and exposes histogra
 | `linux/kv260_ov9281_plnx/Makefile` | Wraps `petalinux-config`/`-build`/`-package`/deploy. `make all` = build + package + deploy. |
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/` | All user customizations — commit this. |
 | `linux/kv260_ov9281_plnx/components/plnx_workspace/device-tree/device-tree/pl.dtsi` | **Auto-generated from .xsa — never edit.** Regenerated on `petalinux-config --get-hw-description`. |
-| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi` | Linux device-tree overrides (bootargs, OV9281 node, endpoint wiring). |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi` | **Base-tree** overrides only (`chosen`/bootargs). It is `#include`d into `system-top.dts`, which does **not** include `pl.dtsi`, so it **cannot** reference PL labels (`&axi_iic_0`, `&mipi_csi_in...`, etc.) — doing so fails with *"Label or path … not found"*. Camera/CSI/VDMA wiring lives in the overlay below, **not** here. |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/camera-overlay.dts` | **The capture pipeline overlay** (OV9281 + I2C mux + CSI→VDMA endpoint rewiring + dummy `sensor_xclk`). Top of file `/include/ "pl.dtsi"` so every PL label resolves at *compile* time → one self-contained `.dtbo`. Compiles to `camera-overlay.dtbo`. |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/device-tree.bbappend` | Registers the overlay via `EXTRA_DT_FILES:append = " camera-overlay.dts"` (**not** `EXTRA_OVERLAYS` — that would also `#include` it into the non-plugin base tree). |
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/meta-xilinx-tools/recipes-bsp/uboot-device-tree/files/system-user.dtsi` | U-boot device-tree overrides (GEM3 ethernet enable, DP83867 PHY). |
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/u-boot/files/platform-top.h` | U-boot env compile-ins. Uses `CFG_EXTRA_ENV_SETTINGS` (renamed from `CONFIG_EXTRA_ENV_SETTINGS` in u-boot 2022.07+). |
 | `linux/nfs-mount-point/` | NFS-exported rootfs. Owned by root after `sudo tar xzf images/linux/rootfs.tar.gz`. NFS server configured with `no_root_squash` in `/etc/exports`. |
@@ -173,11 +175,13 @@ The ISP wrapper is **passive** — it snoops the AXI-Stream and exposes histogra
 - **image.ub** (kernel + DT + initramfs) loaded by u-boot via TFTP from `/srv/tftp` on the host (NOT `/tftpboot` — tftpd-hpa's default).
 - **Kernel** mounts root over NFS via bootargs:
   ```
-  earlycon console=ttyPS1,115200 root=/dev/nfs rootfstype=nfs \
+  earlycon console=ttyPS1,115200 clk_ignore_unused fw_devlink=permissive root=/dev/nfs rootfstype=nfs \
   nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 \
   ip=dhcp rw cma=32M
   ```
-  Set in Linux `system-user.dtsi` under `chosen { bootargs = "..."; };`.
+  Set in Linux `system-user.dtsi` under `chosen { bootargs = "..."; };`. Bootargs are baked into the base DTB inside `image.ub`, so changes need a `-c device-tree` rebuild + redeploy + **reboot** (not just an overlay reload). Verify after boot with `cat /proc/cmdline`.
+  - `clk_ignore_unused` — keeps PL clocks from being gated by `clk_disable_unused` (see Gotchas).
+  - `fw_devlink=permissive` — works around the fpga-region supplier deadlock (see Gotchas). Can be dropped once `CONFIG_OF_FPGA_REGION` is enabled.
 - **U-boot env** (`serverip=10.0.0.70`) compiled into binary via `CFG_EXTRA_ENV_SETTINGS` in `platform-top.h`. KV260 BSP **ships with GEM disabled** in u-boot — the u-boot `system-user.dtsi` re-enables `gem3` with TI DP83867 PHY config and MIO38 reset GPIO.
 
 ### Build / iterate
@@ -195,13 +199,30 @@ Single-component rebuild: `petalinux-build -c u-boot` / `-c device-tree` / `-c k
 
 Passwordless sudo for the deploy targets is configured in `/etc/sudoers.d/petalinux-deploy`.
 
+### Device tree: overlay architecture
+
+The capture pipeline is a **runtime overlay**, not a base-tree edit. Why and how:
+
+- **`pl.dtsi` is an overlay** (`/plugin/;` at top) compiled standalone into `pl.dtbo`. The base tree (`system-top.dts` → `system.dtsi` → `system-user.dtsi`) **does not include `pl.dtsi`**, so PL labels only exist inside the overlay's compilation unit. This is why camera wiring **must not** go in `system-user.dtsi`.
+- **`camera-overlay.dts` is the real deliverable.** It `/include/ "pl.dtsi"` at the top (resolved via the `plnx_workspace/device-tree/device-tree` dir already on dtc's `-i` path), so all PL labels (`axi_iic_0`, `axi_vdma_0`, the `mipi_csi*` endpoints) bind at compile time. New root nodes (`sensor_xclk`, `vcap_csi`) are added with the `&{/}` root-target syntax. Only the standard base nodes (`fpga_full`, `amba`, `zynqmp_clk`, `zynqmp_reset`, `gic`) remain as apply-time `__fixups__` — the same set `pl.dtbo` itself needs.
+- **The build flow** (`device-tree.bb` `do_compile`): any file in `DT_FILES_PATH` whose preprocessed top contains `/plugin/;` is compiled with `dtc -@` (symbols/fixups) into a `.dtbo`. `EXTRA_DTFILES_BUNDLE` additionally `fdtoverlay`s each `.dtbo` onto the base to emit a bundled `system-<name>.dtb`.
+- **Load the `.dtbo`, not the bundle.** `system-camera-overlay.dtb` is a *flattened full tree* — feeding it to `fpgautil -o` fails (`create_overlay … err=-12`). Use the overlay:
+  ```bash
+  fpgautil -o camera-overlay.dtbo -b kv260_ov9281_proj.bit.bin
+  ```
+- **Where the `.dtbo` lands:** PetaLinux only promotes `pl.dtbo` + bundles into `images/linux/`. The real overlay is in the bitbake deploy dir:
+  ```
+  build/tmp/deploy/images/xilinx-k26-kv/devicetree/camera-overlay.dtbo
+  ```
+- **Decompile / inspect:** `dtc -I dtb -O dts camera-overlay.dtbo` (an overlay shows `fragment@N`/`__overlay__`/`__fixups__`; a flat dtb doesn't). Inspect the live applied tree with `dtc -I fs -O dts /proc/device-tree`.
+
 ### Camera driver
 
 Use the **mainline `ov9282.c`** driver (`drivers/media/i2c/ov9282.c`). It probes the chip ID and supports OV9281 silicon at runtime, but:
 
-- **DT compatible must be `"ovti,ov9282"`** — the driver's `of_match_table` does NOT also match `"ovti,ov9281"`, even though the silicon does. Wrong compatible = driver never binds.
+- **DT compatible can be `"ovti,ov9281"` or `"ovti,ov9282"`** — the driver's `of_match_table` matches both (verified in the build tree: `build/tmp/work-shared/xilinx-k26-kv/kernel-source/drivers/media/i2c/ov9282.c`). Use `ovti,ov9281` to reflect the actual silicon.
 - Required DT properties (per `Documentation/devicetree/bindings/media/i2c/ovti,ov9282.yaml`): `compatible`, `reg`, `clocks` (`clock-names = "inclk"`), `port`. Supplies and reset-gpios are optional.
-- The `clocks` value is used for PLL math (`clk_get_rate()`). Wrong frequency = wrong line rate, not a probe failure.
+- **`clocks` is mandatory even if the camera module self-clocks.** This kernel's `ov9282.c` calls `devm_clk_get()` (not `_optional`), enforces `clk_get_rate() == 24 MHz` (`OV9282_INCLK_RATE`), and `clk_prepare_enable()`s it. Omitting it → probe fails with *"could not get inclk"*; wrong rate → *"inclk frequency mismatch"*. When the module supplies XCLK in hardware, give it a dummy `fixed-clock` at 24 MHz (no-op provider) just to satisfy the driver — see `sensor_xclk` in the Linux `system-user.dtsi`.
 - Driver exposes `MEDIA_BUS_FMT_Y10_1X10` and `MEDIA_BUS_FMT_Y8_1X8` (mono). RAW10 mono may require Xilinx ISI/IPI driver patches if format negotiation fails downstream.
 
 ArduCAM's out-of-tree OV9281 driver (`github.com/ArduCAM/ov9281_driver`, Rockchip-derived) is an alternative reference — it has explicit power sequencing (8192 reference-clock-cycle delay after XSHUTDOWN before first I2C) and three preset modes (1280×800, 1280×720, 640×400). If the mainline driver's register init causes image artifacts on OV9281 silicon, this is the fallback.
@@ -223,6 +244,8 @@ CONFIG_XILINX_DMA=m                # dmaengine backend
 CONFIG_I2C_XILINX=m
 CONFIG_GPIO_PCA953X=m              # TCA6408A on KV260 SOM
 CONFIG_UIO_PDRV_GENIRQ=m           # for ISP histogram via generic-uio
+CONFIG_FPGA_BRIDGE=y               # dependency of OF_FPGA_REGION
+CONFIG_OF_FPGA_REGION=y            # REQUIRED — binds fpga_full; without it PL clocks (misc_clk_0) never register (see Gotchas)
 ```
 
 ### V4L2 capture flow (userspace)
@@ -241,7 +264,10 @@ Sanity check the media graph with `media-ctl -p` and `v4l2-ctl --list-devices` b
 
 ### Gotchas
 
-- **PL clocks gated after `fpgautil` reload.** Check with `cat /sys/kernel/debug/clk/clk_summary | grep pl`. If PL0 is off, either reference the PL clock in DT (clean) or kick it with `devmem 0xFF5E00C0 32 0x01010800` (dirty).
+- **PL clocks gated after `fpgautil` reload.** Check with `cat /sys/kernel/debug/clk/clk_summary | grep pl`. If PL0 is off, either reference the PL clock in DT (clean) or kick it with `devmem 0xFF5E00C0 32 0x01010800` (dirty). The durable fix is `clk_ignore_unused` in bootargs.
+- **fpga-region supplier deadlock (no `OF_FPGA_REGION` driver).** Symptom after overlay load: every PL device stuck in `cat /sys/kernel/debug/devices_deferred` as `… supplier fpga-region not ready`, nothing probes, no `/dev/video*`. Cause: `fpga_full` has `compatible = "fpga-region"` but the kernel has no driver to bind it, so with `fw_devlink=on` (default) the PL devices (which are linked as *consumers* of the region) wait forever. The bitstream still loads — that's the FPGA *manager* (`FPGA_MGR_ZYNQMP_FPGA`), present — so `fpga0/state` reads `operating` while nothing probes. **Proper fix: `CONFIG_OF_FPGA_REGION=y` + `CONFIG_FPGA_BRIDGE=y`. Bandaid: `fw_devlink=permissive` bootarg** (lets consumers probe anyway, but see next gotcha — it does *not* fix the clock issue).
+- **PL clocks/AFI live under `fpga_full` → need the region driver to instantiate.** `misc_clk_0` (fixed-factor 2×pl0 = the 200 MHz AXI clock), `clocking0`, and `afi0` are children of `fpga_full`, not of `amba`. The `&amba` overlay nodes get platform devices via the simple-bus overlay notifier, but `fpga_full`'s children only get instantiated by the `of-fpga-region` driver. Without `OF_FPGA_REGION`, `misc_clk_0` is never registered → VDMA/I2C/CSI `devm_clk_get` defers forever. Manifests as `xilinx-vdma: failed to get axi_aclk` — **that string is mislabeled**: `axivdma_clk_init` is actually failing on `"s_axi_lite_aclk"`, which resolves to `misc_clk_0`. `fw_devlink=permissive` does **not** help here (the clock is genuinely absent); only the region driver does.
+- **PL AXI IIC / CSI need their interrupts wired in the Vivado BD.** `pl.dtsi` only emits `interrupts`/`interrupt-parent` for IP whose IRQ is connected in the block design (e.g. VDMA's `s2mm_introut` → GIC SPI 89). If `axi_iic`/`mipi_csi2_rx` IRQs aren't routed to the PS, their nodes get no `interrupts` and probe fails with `-ENXIO: IRQ index 0 not found`. **`i2c-xiic` is interrupt-driven with a mandatory IRQ — no polled fallback — so the camera can't be configured until the IIC interrupt is connected.** Route IIC/CSI IRQs to the same PS-PL interrupt path as VDMA, regenerate the XSA, and `pl.dtsi` will pick them up.
 - **Xilinx pipeline drivers may demand stub ops.** Per Virtana writeup, you may need to add empty `link_setup` media entity op and `s_power` subdev op stubs to the sensor driver if the Xilinx subgraph code unconditionally calls them.
 - **`/tftpboot` vs `/srv/tftp`.** tftpd-hpa serves from `/srv/tftp` by default. Either edit `/etc/default/tftpd-hpa` to point at `/tftpboot`, or update `make deploy-boot` to write into `/srv/tftp`.
 - **Netplan + cloud-init.** `/etc/netplan/50-cloud-init.yaml` can get rewritten on boot; disable cloud-init network management with `network: {config: disabled}` in `/etc/cloud/cloud.cfg.d/99-disable-network.cfg`.
