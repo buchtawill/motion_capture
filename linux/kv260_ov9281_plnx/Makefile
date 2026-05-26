@@ -29,8 +29,8 @@ deploy: deploy-rootfs deploy-boot
 
 deploy-rootfs: $(IMAGES_DIR)/rootfs.tar.gz
 	@test -d $(NFS_DIR) || { echo "NFS_DIR $(NFS_DIR) does not exist"; exit 1; }
-	sudo rm -rf $(NFS_DIR)/*
-	sudo tar xzf $(IMAGES_DIR)/rootfs.tar.gz -C $(NFS_DIR)
+	sudo /usr/bin/find $(NFS_DIR) -mindepth 1 -delete
+	sudo /usr/bin/tar xzf $(IMAGES_DIR)/rootfs.tar.gz -C $(NFS_DIR)
 
 deploy-boot:
 	@test -f /tftpboot/pxelinux.cfg/default \

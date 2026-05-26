@@ -1,6 +1,27 @@
 /include/ "system-conf.dtsi"
+
 / {
     chosen {
-        bootargs = "earlycon console=ttyPS1,115200 clk_ignore_unused root=/dev/nfs rootfstype=nfs nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 ip=dhcp rw cma=32M";
+        /* fw_devlink=permissive: this kernel has no CONFIG_OF_FPGA_REGION driver,
+         * so the fpga_full "fpga-region" node never binds / never becomes a
+         * "ready" supplier. With fw_devlink=on (default), every PL device the
+         * overlay creates is a consumer of that region and hangs forever in
+         * deferred-probe ("supplier fpga-region not ready"). permissive lets
+         * them probe anyway. (Bitstream still loads via the FPGA *manager*.) */
+        bootargs = "earlycon console=ttyPS1,115200 clk_ignore_unused fw_devlink=permissive root=/dev/nfs rootfstype=nfs nfsroot=10.0.0.70:/home/will/Desktop/motion_capture/linux/nfs-mount-point,tcp,nfsvers=3 ip=dhcp rw cma=32M";
     };
 };
+
+/*
+ * The OV9281 / MIPI CSI-2 / VDMA capture pipeline lives in a SEPARATE overlay:
+ *   project-spec/meta-user/recipes-bsp/device-tree/files/camera-overlay.dts
+ *
+ * It must NOT live here. This file is #included into system-top.dts (the BASE
+ * tree), which does not include pl.dtsi — so PL labels like &axi_iic_0 and the
+ * &mipi_csi_in.../&mipi_csirx_out... endpoints are out of scope here and would
+ * fail with "Label or path ... not found". camera-overlay.dts /include/s
+ * pl.dtsi itself, so those labels resolve there at compile time.
+ *
+ * Load the pipeline at runtime with the overlay (not pl.dtbo):
+ *   fpgautil -o camera-overlay.dtbo -b <bitstream>.bit.bin
+ */

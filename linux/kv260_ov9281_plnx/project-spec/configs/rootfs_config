@@ -4082,6 +4082,7 @@ CONFIG_Init-manager-systemd=y
 # user packages 
 #
 # CONFIG_gpio-demo is not set
+CONFIG_hello=y
 CONFIG_packagegroup-petalinux-kria=y
 # CONFIG_peekpoke is not set
 
