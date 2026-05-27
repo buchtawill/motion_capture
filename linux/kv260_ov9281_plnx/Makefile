@@ -29,7 +29,7 @@ package:
 		--fpga $(IMAGES_DIR)/system_wrapper.bit \
 		--u-boot
 
-deploy: deploy-rootfs deploy-boot deploy-overlay
+deploy: deploy-rootfs deploy-boot #deploy-overlay
 
 deploy-rootfs: $(IMAGES_DIR)/rootfs.tar.gz
 	@test -d $(NFS_DIR) || { echo "NFS_DIR $(NFS_DIR) does not exist"; exit 1; }
@@ -41,10 +41,10 @@ deploy-boot:
 		|| { echo "/tftpboot/pxelinux.cfg/default not found"; exit 1; }
 	sed -i '/^[[:space:]]*INITRD\b/Id' /tftpboot/pxelinux.cfg/default
 
-deploy-overlay: $(DTBO) $(BITBIN)
-	@test -d $(ROOT_DIR) || { echo "$(ROOT_DIR) does not exist (deploy-rootfs first)"; exit 1; }
-	sudo /usr/bin/cp $(DTBO) $(ROOT_DIR)/
-	sudo /usr/bin/cp $(BITBIN) $(ROOT_DIR)/
+# deploy-overlay: $(DTBO) $(BITBIN)
+# 	@test -d $(ROOT_DIR) || { echo "$(ROOT_DIR) does not exist (deploy-rootfs first)"; exit 1; }
+# 	sudo /usr/bin/cp $(DTBO) $(ROOT_DIR)/
+# 	sudo /usr/bin/cp $(BITBIN) $(ROOT_DIR)/
 
 clean:
 	petalinux-build -x distclean

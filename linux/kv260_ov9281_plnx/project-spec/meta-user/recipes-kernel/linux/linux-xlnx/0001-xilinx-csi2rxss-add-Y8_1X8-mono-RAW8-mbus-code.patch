@@ -1,0 +1,31 @@
+From: Will Buchta <buchtawill@gmail.com>
+Date: Tue, 27 May 2026 00:00:00 +0000
+Subject: [PATCH] media: xilinx: csi2rxss: accept mono Y8_1X8 as a RAW8 format
+
+The Xilinx CSI-2 RX subsystem's data-type<->mbus LUT carries only the four
+Bayer8 codes for RAW8 (SRGGB8/SBGGR8/SGBRG8/SGRBG8), no mono. Paired with a
+mono sensor such as the OV9281 (which emits Y8_1X8), xcsi2rxss_set_format()
+finds no LUT entry for Y8_1X8 and coerces the sink pad to the configured
+datatype's default Bayer code. The sensor source pad (Y8_1X8) then disagrees
+with the CSI sink pad, and pipeline link_validate fails at STREAMON (-EPIPE).
+
+Y8 and any Bayer8 are the same CSI-2 data type (RAW8, 0x2A) on the wire -- the
+bytes are identical, only the V4L2 label differs. Add Y8_1X8 to the RAW8 group
+of the LUT. get_dt(Y8_1X8) then returns RAW8, so the "RAW8 is supported in all
+datatypes" path in set_format accepts it without coercion, and the sink/source
+pads carry Y8 end to end. The downstream xilinx-vip format table already maps
+Y8_1X8 <-> V4L2_PIX_FMT_GREY, so the DMA video node exposes honest grayscale
+(GREY) rather than a misleading Bayer fourcc. No sensor-driver change needed.
+
+Signed-off-by: Will Buchta <buchtawill@gmail.com>
+---
+--- a/drivers/media/platform/xilinx/xilinx-csi2rxss.c
++++ b/drivers/media/platform/xilinx/xilinx-csi2rxss.c
+@@ -183,6 +183,7 @@
+ 	{ MIPI_CSI2_DT_RAW8, MEDIA_BUS_FMT_SBGGR8_1X8 },
+ 	{ MIPI_CSI2_DT_RAW8, MEDIA_BUS_FMT_SGBRG8_1X8 },
+ 	{ MIPI_CSI2_DT_RAW8, MEDIA_BUS_FMT_SGRBG8_1X8 },
++	{ MIPI_CSI2_DT_RAW8, MEDIA_BUS_FMT_Y8_1X8 },
+ 	{ MIPI_CSI2_DT_RAW10, MEDIA_BUS_FMT_SRGGB10_1X10 },
+ 	{ MIPI_CSI2_DT_RAW10, MEDIA_BUS_FMT_SBGGR10_1X10 },
+ 	{ MIPI_CSI2_DT_RAW10, MEDIA_BUS_FMT_SGBRG10_1X10 },

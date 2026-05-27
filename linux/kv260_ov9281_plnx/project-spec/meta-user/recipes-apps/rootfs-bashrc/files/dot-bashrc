@@ -1,0 +1,8 @@
+# Default .bashrc installed by the rootfs-bashrc recipe.
+
+export PS1='\u@\h:\w\$ '
+export PATH=$PATH:/usr/local/bin:/home/root
+
+alias ll='ls -alhF'
+alias la='ls -A'
+alias l='ls -CF'

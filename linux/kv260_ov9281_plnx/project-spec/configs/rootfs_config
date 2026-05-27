@@ -863,10 +863,10 @@ CONFIG_pciutils=y
 #
 # vim 
 #
-# CONFIG_vim is not set
+CONFIG_vim=y
 # CONFIG_vim-help is not set
 # CONFIG_vim-dbg is not set
-# CONFIG_vim-vimrc is not set
+CONFIG_vim-vimrc=y
 # CONFIG_vim-dev is not set
 # CONFIG_vim-tutor is not set
 # CONFIG_vim-tools is not set
@@ -4081,10 +4081,14 @@ CONFIG_Init-manager-systemd=y
 #
 # user packages 
 #
+CONFIG_camera-fpga-files=y
 # CONFIG_gpio-demo is not set
 CONFIG_hello=y
+CONFIG_mocap-perf=y
+CONFIG_mocap-sanity=y
 CONFIG_packagegroup-petalinux-kria=y
 # CONFIG_peekpoke is not set
+CONFIG_rootfs-bashrc=y
 
 #
 # PetaLinux RootFS Settings

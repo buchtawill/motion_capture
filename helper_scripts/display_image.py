@@ -5,9 +5,9 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-image_path = "/home/will/Desktop/motion_capture/vitis/kv260_ov9281/mem_dump.bin"
+image_path = "/home/will/Desktop/motion_capture/linux/kv260_ov9281_plnx/image_capture.raw"
 
-os.system('cd ../vitis/kv260_ov9281 && make dump_image')
+# os.system('cd ../vitis/kv260_ov9281 && make dump_image')
 
 WIDTH  = 1280
 HEIGHT = 800

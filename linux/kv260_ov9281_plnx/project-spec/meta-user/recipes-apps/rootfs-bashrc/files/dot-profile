@@ -1,0 +1,6 @@
+# Default .profile installed by the rootfs-bashrc recipe.
+# Login shells (sh or bash) read .profile, not .bashrc, so pull it in here.
+
+if [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+fi

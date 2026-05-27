@@ -5,3 +5,7 @@ CONFIG_gpio-demo
 CONFIG_peekpoke
 CONFIG_packagegroup-petalinux-kria
 CONFIG_hello
+CONFIG_rootfs-bashrc
+CONFIG_camera-fpga-files
+CONFIG_mocap-sanity
+CONFIG_mocap-perf
