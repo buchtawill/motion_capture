@@ -84,10 +84,16 @@ int main(int argc, char *argv[]) {
     program.add_argument("-d", "--device")
         .default_value(std::string("/dev/video0"))
         .help("V4L2 capture device node");
+    program.add_argument("--mode")
+        .default_value(std::string(""))
+        .help("capture mode (sets width/height): " + sensor_modes_str() +
+              " (all 8-bit/GREY; overrides -W/-H)");
     program.add_argument("-W", "--width")
-        .default_value(1280u).scan<'u', unsigned>().help("frame width");
+        .default_value(1280u).scan<'u', unsigned>()
+        .help("frame width (ignored if --mode is given)");
     program.add_argument("-H", "--height")
-        .default_value(800u).scan<'u', unsigned>().help("frame height");
+        .default_value(800u).scan<'u', unsigned>()
+        .help("frame height (ignored if --mode is given)");
     program.add_argument("-f", "--format")
         .default_value(std::string("GREY"))
         .help("4-char V4L2 pixelformat fourcc (8-bpp RAW; GREY for mono)");
@@ -106,6 +112,10 @@ int main(int argc, char *argv[]) {
         .help("CSI-RX entity name substr");
     program.add_argument("--mbus-code")
         .default_value(std::string("")).help("override subdev mbus code (hex)");
+    program.add_argument("--fps")
+        .default_value(std::string("max"))
+        .help("target frame rate: 'max' (default, = --vblank min) or a number; "
+              "a numeric value is converted to vblank and overrides --vblank");
     program.add_argument("--vblank")
         .default_value(std::string("min"))
         .help("sensor vertical blanking lines: 'min' (max fps, default), "
@@ -122,8 +132,9 @@ int main(int argc, char *argv[]) {
     }
 
     const std::string device = program.get<std::string>("--device");
-    const unsigned width = program.get<unsigned>("--width");
-    const unsigned height = program.get<unsigned>("--height");
+    const std::string mode_arg = program.get<std::string>("--mode");
+    unsigned width = program.get<unsigned>("--width");
+    unsigned height = program.get<unsigned>("--height");
     const uint32_t pixfmt = fourcc(program.get<std::string>("--format"));
     const double duration = program.get<double>("--duration");
     const unsigned nbuf = program.get<unsigned>("--buffers");
@@ -131,8 +142,22 @@ int main(int argc, char *argv[]) {
     const std::string sensor_name = program.get<std::string>("--sensor-entity");
     const std::string csi_name = program.get<std::string>("--csi-entity");
     const std::string mbus_arg = program.get<std::string>("--mbus-code");
+    const std::string fps_arg = program.get<std::string>("--fps");
     const std::string vblank_arg = program.get<std::string>("--vblank");
     const bool skip_setup = program.get<bool>("--skip-setup");
+
+    // --mode is a convenience picker over the driver's supported resolutions;
+    // when set it wins over -W/-H.
+    if (!mode_arg.empty()) {
+        const SensorMode *m = find_mode(mode_arg);
+        if (!m) {
+            std::cerr << "mocap-perf: unknown --mode '" << mode_arg
+                      << "'; valid: " << sensor_modes_str() << "\n";
+            return 1;
+        }
+        width = m->width;
+        height = m->height;
+    }
 
     if (!skip_setup) {
         uint32_t mbus_code;
@@ -149,7 +174,21 @@ int main(int argc, char *argv[]) {
         const std::string sensor_path = configure_subdevs(
             media_dev, sensor_name, csi_name, mbus_code, width, height);
         // After S_FMT (which resets per-mode controls), drive the frame rate.
-        apply_vblank(sensor_path, vblank_arg);
+        // A numeric --fps is computed into a vblank value; otherwise fall back
+        // to --vblank (whose default 'min' already gives the mode's max fps).
+        if (fps_arg != "max") {
+            double target;
+            try {
+                target = std::stod(fps_arg);
+            } catch (const std::exception &) {
+                std::cerr << "mocap-perf: --fps must be 'max' or a number, got '"
+                          << fps_arg << "'\n";
+                return 1;
+            }
+            apply_fps(sensor_path, target, width, height);
+        } else {
+            apply_vblank(sensor_path, vblank_arg);
+        }
     }
 
     // Blocking fd: a blocking DQBUF is the lowest-overhead way to pull frames;

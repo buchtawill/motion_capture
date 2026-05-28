@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -293,6 +294,118 @@ inline void apply_vblank(const std::string &sensor_path,
     std::cout << "Vertical blanking set to " << want << " lines (min "
               << q.minimum << ", max " << q.maximum << ", default "
               << q.default_value << ")\n";
+}
+
+// --- capture modes / frame-rate targeting ---------------------------------
+
+// Resolutions the mainline ov9282.c actually supports (its supported_modes[]).
+// vblank_min is the driver's per-mode minimum vertical blanking, which sets the
+// theoretical max frame rate: fps = pixel_rate / (HTS * (height + vblank_min)).
+//
+// The innomaker datasheet also lists 10-bit (Y10) modes and a 320x200 mode;
+// neither is reachable on this Linux pipeline. 320x200 isn't in the driver, and
+// 10-bit needs a Y10 CSI mbus code we never patched in (only Y8_1X8). So every
+// usable mode here is 8-bit mono (GREY).
+struct SensorMode {
+    const char *name;    // CLI token, e.g. "1280x800"
+    unsigned width;
+    unsigned height;
+    unsigned vblank_min; // driver minimum -> max fps for the mode
+};
+
+inline const std::vector<SensorMode> &sensor_modes() {
+    static const std::vector<SensorMode> m = {
+        {"1280x800", 1280, 800, 110},
+        {"1280x720", 1280, 720, 41},
+        {"640x400", 640, 400, 22},
+    };
+    return m;
+}
+
+// Look up a mode by its CLI token; nullptr if unknown.
+inline const SensorMode *find_mode(const std::string &name) {
+    for (const auto &m : sensor_modes())
+        if (name == m.name)
+            return &m;
+    return nullptr;
+}
+
+// Human-readable list of valid --mode tokens, for help/error text.
+inline std::string sensor_modes_str() {
+    std::string s;
+    for (const auto &m : sensor_modes())
+        s += (s.empty() ? "" : ", ") + std::string(m.name);
+    return s;
+}
+
+// Read a sensor 32-bit control (returns its current value, aborts on failure).
+inline int get_int_ctrl(int fd, uint32_t id, const char *label) {
+    v4l2_control c{};
+    c.id = id;
+    if (xioctl(fd, VIDIOC_G_CTRL, &c) == -1)
+        fail(std::string("VIDIOC_G_CTRL ") + label);
+    return c.value;
+}
+
+// Drive the sensor to ~target_fps by computing vertical blanking from the
+// queried pixel rate and horizontal blanking:
+//   HTS = width + HBLANK,  VTS = pixel_rate / (HTS * fps),  vblank = VTS - height
+// vblank is clamped to the driver's [min,max] (so an unreachable target lands at
+// the nearest achievable rate), and the actual resulting rate is reported.
+inline void apply_fps(const std::string &sensor_path, double target_fps,
+                      unsigned width, unsigned height) {
+    if (target_fps <= 0)
+        die("--fps must be positive");
+    int fd = open(sensor_path.c_str(), O_RDWR);
+    if (fd == -1)
+        fail("open " + sensor_path + " (fps)");
+
+    // pixel_rate is a read-only 64-bit control: needs G_EXT_CTRLS / value64.
+    int64_t pixel_rate = 0;
+    {
+        v4l2_ext_control ec{};
+        ec.id = V4L2_CID_PIXEL_RATE;
+        v4l2_ext_controls ecs{};
+        ecs.which = V4L2_CTRL_WHICH_CUR_VAL;
+        ecs.count = 1;
+        ecs.controls = &ec;
+        if (xioctl(fd, VIDIOC_G_EXT_CTRLS, &ecs) == -1) {
+            close(fd);
+            fail("VIDIOC_G_EXT_CTRLS PIXEL_RATE");
+        }
+        pixel_rate = ec.value64;
+    }
+    const int hblank = get_int_ctrl(fd, V4L2_CID_HBLANK, "HBLANK");
+
+    v4l2_queryctrl q{};
+    q.id = V4L2_CID_VBLANK;
+    if (xioctl(fd, VIDIOC_QUERYCTRL, &q) == -1) {
+        close(fd);
+        fail("VIDIOC_QUERYCTRL VBLANK");
+    }
+
+    const double hts = double(width) + hblank;
+    const double vts = double(pixel_rate) / (hts * target_fps);
+    long vblank = std::lround(vts) - long(height);
+    if (vblank < q.minimum) vblank = q.minimum;
+    if (vblank > q.maximum) vblank = q.maximum;
+
+    v4l2_control c{};
+    c.id = V4L2_CID_VBLANK;
+    c.value = int(vblank);
+    if (xioctl(fd, VIDIOC_S_CTRL, &c) == -1) {
+        close(fd);
+        fail("VIDIOC_S_CTRL VBLANK");
+    }
+    close(fd);
+
+    const double actual = double(pixel_rate) / (hts * (double(height) + vblank));
+    std::cout << "Frame rate: requested " << target_fps << " fps -> vblank "
+              << vblank << " lines -> ~" << actual << " fps actual "
+              << "(pixel_rate " << pixel_rate << ", HTS " << long(hts) << ")\n";
+    if (std::abs(actual - target_fps) > 1.0)
+        std::cerr << prog_name() << ": note: " << target_fps
+                  << " fps not reachable; clamped to ~" << actual << " fps\n";
 }
 
 }  // namespace mocap
