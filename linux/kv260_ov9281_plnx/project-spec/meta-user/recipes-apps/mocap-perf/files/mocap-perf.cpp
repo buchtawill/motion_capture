@@ -4,54 +4,38 @@
 // the pipeline delivers, doing zero per-frame work (no disk I/O, immediate
 // requeue). FPS is computed in software from CLOCK_MONOTONIC dequeue times.
 //
+// By default it drives the sensor to its maximum frame rate by minimising
+// vertical blanking (V4L2_CID_VBLANK): fps = pixel_rate / (HTS * (H + vblank)),
+// and the mainline ov9282 ships a large default vblank that ~halves the rate.
+// Use --vblank to pick a specific value (larger = slower) or 'keep' the default.
+//
 // Reports a per-second instantaneous rate while running and, at the end, the
 // steady-state average plus inter-frame interval min/max/mean (jitter). The
 // measurement window starts at the SECOND frame so it excludes STREAMON latency.
 
 #include <cerrno>
 #include <cstdint>
-#include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
-#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <unistd.h>
 
-#include <linux/media.h>
-#include <linux/media-bus-format.h>
-#include <linux/v4l2-subdev.h>
 #include <linux/videodev2.h>
 
-#include "argparse.hpp"
+#include <mocap/argparse.hpp>
+#include <mocap/ov9281_pipeline.hpp>
+
+// Pipeline config (topology walk, subdev formats, VBLANK), the fourcc helpers,
+// xioctl/fail and MappedPlane all live in <mocap/ov9281_pipeline.hpp>.
+using namespace mocap;
 
 namespace {
-
-// Standard pad layout for this pipeline.
-constexpr unsigned kSensorSrcPad = 0;
-constexpr unsigned kCsiSinkPad = 0;
-constexpr unsigned kCsiSrcPad = 1;
-
-int xioctl(int fd, unsigned long req, void *arg) {
-    int r;
-    do {
-        r = ioctl(fd, req, arg);
-    } while (r == -1 && errno == EINTR);
-    return r;
-}
-
-[[noreturn]] void fail(const std::string &what) {
-    std::cerr << "mocap-perf: " << what << ": " << std::strerror(errno) << " ("
-              << errno << ")\n";
-    std::exit(1);
-}
 
 double now_s() {
     timespec ts;
@@ -59,172 +43,40 @@ double now_s() {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-uint32_t fourcc(const std::string &s) {
-    char c[4] = {' ', ' ', ' ', ' '};
-    for (size_t i = 0; i < s.size() && i < 4; ++i)
-        c[i] = s[i];
-    return v4l2_fourcc(c[0], c[1], c[2], c[3]);
-}
-
-std::string fourcc_str(uint32_t f) {
-    char c[5] = {char(f), char(f >> 8), char(f >> 16), char(f >> 24), 0};
-    return std::string(c);
-}
-
-uint32_t fourcc_to_mbus(uint32_t pixfmt) {
-    switch (pixfmt) {
-        case V4L2_PIX_FMT_GREY:   return MEDIA_BUS_FMT_Y8_1X8;
-        case V4L2_PIX_FMT_SGRBG8: return MEDIA_BUS_FMT_SGRBG8_1X8;
-        case V4L2_PIX_FMT_SRGGB8: return MEDIA_BUS_FMT_SRGGB8_1X8;
-        case V4L2_PIX_FMT_SBGGR8: return MEDIA_BUS_FMT_SBGGR8_1X8;
-        case V4L2_PIX_FMT_SGBRG8: return MEDIA_BUS_FMT_SGBRG8_1X8;
-        default:                  return 0;
-    }
-}
-
-struct MappedPlane {
-    void *start = nullptr;
-    size_t length = 0;
+// Aggregate CPU jiffies from the "cpu" line of /proc/stat (summed over all
+// cores). idle counts the idle + iowait fields. Idle % over an interval is
+// (idle delta) / (total delta) * 100.
+struct CpuTimes {
+    unsigned long long total = 0;
+    unsigned long long idle = 0;
 };
 
-// --- media controller topology (identical approach to mocap-sanity) ------
-
-struct Topology {
-    std::vector<media_v2_entity> entities;
-    std::vector<media_v2_interface> interfaces;
-    std::vector<media_v2_pad> pads;
-    std::vector<media_v2_link> links;
-};
-
-Topology get_topology(int mfd) {
-    Topology t;
-    media_v2_topology topo{};
-    if (xioctl(mfd, MEDIA_IOC_G_TOPOLOGY, &topo) == -1)
-        fail("MEDIA_IOC_G_TOPOLOGY (counts)");
-    t.entities.resize(topo.num_entities);
-    t.interfaces.resize(topo.num_interfaces);
-    t.pads.resize(topo.num_pads);
-    t.links.resize(topo.num_links);
-    topo.ptr_entities = reinterpret_cast<uintptr_t>(t.entities.data());
-    topo.ptr_interfaces = reinterpret_cast<uintptr_t>(t.interfaces.data());
-    topo.ptr_pads = reinterpret_cast<uintptr_t>(t.pads.data());
-    topo.ptr_links = reinterpret_cast<uintptr_t>(t.links.data());
-    if (xioctl(mfd, MEDIA_IOC_G_TOPOLOGY, &topo) == -1)
-        fail("MEDIA_IOC_G_TOPOLOGY (fill)");
-    return t;
+CpuTimes read_cpu_times() {
+    CpuTimes c;
+    std::ifstream f("/proc/stat");
+    std::string tag;
+    if (f >> tag && tag == "cpu") {
+        unsigned long long v, idle = 0, iowait = 0;
+        for (unsigned idx = 0; f >> v; ++idx) {
+            c.total += v;
+            if (idx == 3) idle = v;       // idle
+            else if (idx == 4) iowait = v;  // iowait
+        }
+        c.idle = idle + iowait;
+    }
+    return c;
 }
 
-std::string subdev_path_for(const Topology &t, const std::string &name_substr) {
-    uint32_t entity_id = 0;
-    std::string matched;
-    for (const auto &e : t.entities)
-        if (std::string(e.name).find(name_substr) != std::string::npos) {
-            entity_id = e.id;
-            matched = e.name;
-            break;
-        }
-    if (!entity_id) {
-        std::cerr << "mocap-perf: no media entity matching \"" << name_substr
-                  << "\"\n";
-        std::exit(1);
-    }
-    uint32_t intf_id = 0;
-    for (const auto &l : t.links)
-        if ((l.flags & MEDIA_LNK_FL_LINK_TYPE) == MEDIA_LNK_FL_INTERFACE_LINK &&
-            l.sink_id == entity_id) {
-            intf_id = l.source_id;
-            break;
-        }
-    if (!intf_id) {
-        std::cerr << "mocap-perf: entity \"" << matched << "\" has no devnode\n";
-        std::exit(1);
-    }
-    uint32_t major = 0, minor = 0;
-    bool found = false;
-    for (const auto &i : t.interfaces)
-        if (i.id == intf_id) {
-            major = i.devnode.major;
-            minor = i.devnode.minor;
-            found = true;
-            break;
-        }
-    if (!found) {
-        std::cerr << "mocap-perf: interface " << intf_id << " not found\n";
-        std::exit(1);
-    }
-    const dev_t want = makedev(major, minor);
-    DIR *d = opendir("/dev");
-    if (!d)
-        fail("opendir /dev");
-    std::string path;
-    for (dirent *de = readdir(d); de; de = readdir(d)) {
-        std::string cand = std::string("/dev/") + de->d_name;
-        struct stat st{};
-        if (stat(cand.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
-            st.st_rdev == want) {
-            path = cand;
-            break;
-        }
-    }
-    closedir(d);
-    if (path.empty()) {
-        std::cerr << "mocap-perf: no /dev node for " << matched << "\n";
-        std::exit(1);
-    }
-    std::cout << "  " << matched << " -> " << path << "\n";
-    return path;
-}
-
-void set_subdev_format(const std::string &path, unsigned pad, uint32_t code,
-                       unsigned w, unsigned h, const std::string &label) {
-    int fd = open(path.c_str(), O_RDWR);
-    if (fd == -1)
-        fail("open " + path + " (" + label + ")");
-    v4l2_subdev_format sfmt{};
-    sfmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
-    sfmt.pad = pad;
-    sfmt.format.width = w;
-    sfmt.format.height = h;
-    sfmt.format.code = code;
-    sfmt.format.field = V4L2_FIELD_NONE;
-    sfmt.format.colorspace = V4L2_COLORSPACE_RAW;
-    if (xioctl(fd, VIDIOC_SUBDEV_S_FMT, &sfmt) == -1) {
-        close(fd);
-        fail("VIDIOC_SUBDEV_S_FMT " + label + " pad " + std::to_string(pad));
-    }
-    if (sfmt.format.code != code || sfmt.format.width != w ||
-        sfmt.format.height != h)
-        std::cerr << "mocap-perf: warning: " << label << " pad " << pad
-                  << " coerced to code 0x" << std::hex << sfmt.format.code
-                  << std::dec << " " << sfmt.format.width << "x"
-                  << sfmt.format.height << "\n";
-    close(fd);
-}
-
-void configure_subdevs(const std::string &media_dev,
-                       const std::string &sensor_name,
-                       const std::string &csi_name, uint32_t mbus_code,
-                       unsigned w, unsigned h) {
-    int mfd = open(media_dev.c_str(), O_RDWR);
-    if (mfd == -1)
-        fail("open " + media_dev);
-    Topology t = get_topology(mfd);
-    close(mfd);
-    std::cout << "Resolving subdevs:\n";
-    const std::string sensor_path = subdev_path_for(t, sensor_name);
-    const std::string csi_path = subdev_path_for(t, csi_name);
-    std::cout << "Setting pad formats (code 0x" << std::hex << mbus_code
-              << std::dec << " " << w << "x" << h << "):\n";
-    set_subdev_format(sensor_path, kSensorSrcPad, mbus_code, w, h,
-                      sensor_name + " src");
-    set_subdev_format(csi_path, kCsiSinkPad, mbus_code, w, h, csi_name + " sink");
-    set_subdev_format(csi_path, kCsiSrcPad, mbus_code, w, h, csi_name + " src");
-    std::cout << "Pipeline configured.\n";
+// Idle percentage between two snapshots; 0 if the interval has no ticks.
+double idle_pct(const CpuTimes &a, const CpuTimes &b) {
+    const unsigned long long dt = b.total - a.total;
+    return dt ? 100.0 * (b.idle - a.idle) / dt : 0.0;
 }
 
 }  // namespace
 
 int main(int argc, char *argv[]) {
+    prog_name() = "mocap-perf";  // prefix for shared pipeline error messages
     argparse::ArgumentParser program("mocap-perf", "1.0");
     program.add_description(
         "Stream as fast as possible and measure capture FPS in software.");
@@ -254,9 +106,13 @@ int main(int argc, char *argv[]) {
         .help("CSI-RX entity name substr");
     program.add_argument("--mbus-code")
         .default_value(std::string("")).help("override subdev mbus code (hex)");
+    program.add_argument("--vblank")
+        .default_value(std::string("min"))
+        .help("sensor vertical blanking lines: 'min' (max fps, default), "
+              "'keep' (driver default), or an integer (larger = slower)");
     program.add_argument("--skip-setup")
         .default_value(false).implicit_value(true)
-        .help("skip media/subdev configuration");
+        .help("skip media/subdev configuration (also skips --vblank)");
 
     try {
         program.parse_args(argc, argv);
@@ -275,6 +131,7 @@ int main(int argc, char *argv[]) {
     const std::string sensor_name = program.get<std::string>("--sensor-entity");
     const std::string csi_name = program.get<std::string>("--csi-entity");
     const std::string mbus_arg = program.get<std::string>("--mbus-code");
+    const std::string vblank_arg = program.get<std::string>("--vblank");
     const bool skip_setup = program.get<bool>("--skip-setup");
 
     if (!skip_setup) {
@@ -289,8 +146,10 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
         }
-        configure_subdevs(media_dev, sensor_name, csi_name, mbus_code, width,
-                          height);
+        const std::string sensor_path = configure_subdevs(
+            media_dev, sensor_name, csi_name, mbus_code, width, height);
+        // After S_FMT (which resets per-mode controls), drive the frame rate.
+        apply_vblank(sensor_path, vblank_arg);
     }
 
     // Blocking fd: a blocking DQBUF is the lowest-overhead way to pull frames;
@@ -385,6 +244,8 @@ int main(int argc, char *argv[]) {
     uint64_t frames_since_report = 0;
     double iv_min = 1e9, iv_max = 0, iv_sum = 0;  // inter-frame interval stats
     bool started = false;
+    CpuTimes cpu_window;  // snapshot at window start (whole-run idle %)
+    CpuTimes cpu_report;  // snapshot at last per-second report
 
     for (;;) {
         pollfd pfd{fd, POLLIN, 0};
@@ -420,11 +281,12 @@ int main(int argc, char *argv[]) {
             fail("VIDIOC_QBUF");
 
         if (!started) {
-            // First frame: prime timers, do not count (excludes startup).
+            // First frame: prime timers and CPU snapshots, do not count.
             started = true;
             t_start = t;
             t_last_frame = t;
             t_report = t;
+            cpu_window = cpu_report = read_cpu_times();
         } else {
             ++frames;
             ++frames_since_report;
@@ -435,8 +297,11 @@ int main(int argc, char *argv[]) {
             iv_sum += iv;
 
             if (t - t_report >= 1.0) {
+                const CpuTimes cpu_now = read_cpu_times();
                 std::cout << "  " << frames_since_report / (t - t_report)
-                          << " fps\n";
+                          << " fps   cpu idle " << idle_pct(cpu_report, cpu_now)
+                          << " %\n";
+                cpu_report = cpu_now;
                 frames_since_report = 0;
                 t_report = t;
             }
@@ -445,6 +310,7 @@ int main(int argc, char *argv[]) {
         if (started && (t - t_start) >= duration)
             break;
     }
+    const CpuTimes cpu_end = read_cpu_times();  // whole-window idle reference
 
     if (xioctl(fd, VIDIOC_STREAMOFF, &type) == -1)
         fail("VIDIOC_STREAMOFF");
@@ -464,5 +330,7 @@ int main(int argc, char *argv[]) {
     std::cout << "average:           " << frames / elapsed << " fps\n";
     std::cout << "inter-frame ms:    min " << iv_min * 1e3 << "  mean "
               << (iv_sum / frames) * 1e3 << "  max " << iv_max * 1e3 << "\n";
+    std::cout << "cpu idle (avg):    " << idle_pct(cpu_window, cpu_end)
+              << " % (all cores)\n";
     return 0;
 }

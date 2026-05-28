@@ -6,254 +6,66 @@
 //   3. Set the mbus format on every pad (sensor source, CSI sink, CSI source)
 //      so link_validate passes.
 //   4. Set the matching 8-bpp RAW pixelformat on the video (DMA) node.
-//   5. MMAP stream a single frame and write the raw bytes to a file.
+//   5. MMAP stream a single frame and write it to a file. A ".png" output
+//      is encoded as a single-channel grayscale PNG (the OV9281 is mono);
+//      any other extension writes the raw frame bytes verbatim.
 //
 // All steps are error-checked; on failure the offending entity/pad/ioctl is
 // named so a failed run is self-diagnosing.
 
+#include <cctype>
 #include <cerrno>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
-#include <dirent.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/sysmacros.h>
+#include <sys/select.h>
 #include <unistd.h>
 
-#include <linux/media.h>
-#include <linux/media-bus-format.h>
-#include <linux/v4l2-subdev.h>
 #include <linux/videodev2.h>
 
-#include "argparse.hpp"
+#include <mocap/argparse.hpp>
+#include <mocap/ov9281_pipeline.hpp>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <mocap/stb_image_write.h>
+
+// Pipeline config (topology walk, subdev formats), the fourcc helpers,
+// xioctl/fail and MappedPlane all live in <mocap/ov9281_pipeline.hpp>.
+using namespace mocap;
 
 namespace {
 
 constexpr unsigned kBufferCount = 4;
 
-// Standard pad layout for this pipeline.
-constexpr unsigned kSensorSrcPad = 0;  // ov9281 source
-constexpr unsigned kCsiSinkPad = 0;    // CSI-RX sink (from sensor)
-constexpr unsigned kCsiSrcPad = 1;     // CSI-RX source (to DMA)
-
-int xioctl(int fd, unsigned long req, void *arg) {
-    int r;
-    do {
-        r = ioctl(fd, req, arg);
-    } while (r == -1 && errno == EINTR);
-    return r;
+// Case-insensitive ".png" suffix test on the output path.
+bool wants_png(const std::string &path) {
+    if (path.size() < 4)
+        return false;
+    std::string ext = path.substr(path.size() - 4);
+    for (char &c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".png";
 }
 
-[[noreturn]] void fail(const std::string &what) {
-    std::cerr << "mocap-sanity: " << what << ": " << std::strerror(errno)
-              << " (" << errno << ")\n";
-    std::exit(1);
-}
-
-// Decode a 4-char fourcc string ("GRBG") into a V4L2 pixelformat.
-uint32_t fourcc(const std::string &s) {
-    char c[4] = {' ', ' ', ' ', ' '};
-    for (size_t i = 0; i < s.size() && i < 4; ++i)
-        c[i] = s[i];
-    return v4l2_fourcc(c[0], c[1], c[2], c[3]);
-}
-
-std::string fourcc_str(uint32_t f) {
-    char c[5] = {char(f), char(f >> 8), char(f >> 16), char(f >> 24), 0};
-    return std::string(c);
-}
-
-// Map an 8-bpp RAW pixelformat to the mbus code the subdevs expect. Returns 0
-// if unknown (caller must then supply --mbus-code explicitly).
-uint32_t fourcc_to_mbus(uint32_t pixfmt) {
-    switch (pixfmt) {
-        case V4L2_PIX_FMT_SGRBG8: return MEDIA_BUS_FMT_SGRBG8_1X8;
-        case V4L2_PIX_FMT_SRGGB8: return MEDIA_BUS_FMT_SRGGB8_1X8;
-        case V4L2_PIX_FMT_SBGGR8: return MEDIA_BUS_FMT_SBGGR8_1X8;
-        case V4L2_PIX_FMT_SGBRG8: return MEDIA_BUS_FMT_SGBRG8_1X8;
-        case V4L2_PIX_FMT_GREY:   return MEDIA_BUS_FMT_Y8_1X8;
-        default:                  return 0;
-    }
-}
-
-struct MappedPlane {
-    void *start = nullptr;
-    size_t length = 0;
-};
-
-// --- media controller topology -------------------------------------------
-
-struct Topology {
-    std::vector<media_v2_entity> entities;
-    std::vector<media_v2_interface> interfaces;
-    std::vector<media_v2_pad> pads;
-    std::vector<media_v2_link> links;
-};
-
-Topology get_topology(int mfd) {
-    Topology t;
-    media_v2_topology topo{};
-    // First call: ptrs are null, kernel fills the counts.
-    if (xioctl(mfd, MEDIA_IOC_G_TOPOLOGY, &topo) == -1)
-        fail("MEDIA_IOC_G_TOPOLOGY (counts)");
-
-    t.entities.resize(topo.num_entities);
-    t.interfaces.resize(topo.num_interfaces);
-    t.pads.resize(topo.num_pads);
-    t.links.resize(topo.num_links);
-    topo.ptr_entities = reinterpret_cast<uintptr_t>(t.entities.data());
-    topo.ptr_interfaces = reinterpret_cast<uintptr_t>(t.interfaces.data());
-    topo.ptr_pads = reinterpret_cast<uintptr_t>(t.pads.data());
-    topo.ptr_links = reinterpret_cast<uintptr_t>(t.links.data());
-
-    // Second call: kernel fills the arrays.
-    if (xioctl(mfd, MEDIA_IOC_G_TOPOLOGY, &topo) == -1)
-        fail("MEDIA_IOC_G_TOPOLOGY (fill)");
-    return t;
-}
-
-// Resolve the /dev/v4l-subdevN path for the entity whose name contains
-// name_substr, by following its interface link to a devnode major/minor.
-std::string subdev_path_for(const Topology &t, const std::string &name_substr) {
-    // 1. entity by name substring.
-    uint32_t entity_id = 0;
-    std::string matched;
-    for (const auto &e : t.entities) {
-        if (std::string(e.name).find(name_substr) != std::string::npos) {
-            entity_id = e.id;
-            matched = e.name;
-            break;
-        }
-    }
-    if (!entity_id) {
-        std::cerr << "mocap-sanity: no media entity matching \"" << name_substr
-                  << "\"\n";
-        std::exit(1);
-    }
-
-    // 2. interface link (source = interface, sink = entity).
-    uint32_t intf_id = 0;
-    for (const auto &l : t.links) {
-        if ((l.flags & MEDIA_LNK_FL_LINK_TYPE) == MEDIA_LNK_FL_INTERFACE_LINK &&
-            l.sink_id == entity_id) {
-            intf_id = l.source_id;
-            break;
-        }
-    }
-    if (!intf_id) {
-        std::cerr << "mocap-sanity: entity \"" << matched
-                  << "\" has no interface (no devnode)\n";
-        std::exit(1);
-    }
-
-    // 3. interface devnode major/minor.
-    uint32_t major = 0, minor = 0;
-    bool found = false;
-    for (const auto &i : t.interfaces) {
-        if (i.id == intf_id) {
-            major = i.devnode.major;
-            minor = i.devnode.minor;
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
-        std::cerr << "mocap-sanity: interface " << intf_id << " for \"" << matched
-                  << "\" not found\n";
-        std::exit(1);
-    }
-
-    // 4. scan /dev for the char device with this rdev.
-    const dev_t want = makedev(major, minor);
-    DIR *d = opendir("/dev");
-    if (!d)
-        fail("opendir /dev");
-    std::string path;
-    for (dirent *de = readdir(d); de; de = readdir(d)) {
-        std::string cand = std::string("/dev/") + de->d_name;
-        struct stat st{};
-        if (stat(cand.c_str(), &st) == 0 && S_ISCHR(st.st_mode) &&
-            st.st_rdev == want) {
-            path = cand;
-            break;
-        }
-    }
-    closedir(d);
-    if (path.empty()) {
-        std::cerr << "mocap-sanity: no /dev node for " << matched << " ("
-                  << major << ":" << minor << ")\n";
-        std::exit(1);
-    }
-    std::cout << "  " << matched << " -> " << path << "\n";
-    return path;
-}
-
-// Set one subdev pad's active mbus format; aborts with context on failure.
-void set_subdev_format(const std::string &path, unsigned pad, uint32_t code,
-                       unsigned w, unsigned h, const std::string &label) {
-    int fd = open(path.c_str(), O_RDWR);
-    if (fd == -1)
-        fail("open " + path + " (" + label + ")");
-
-    v4l2_subdev_format sfmt{};
-    sfmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
-    sfmt.pad = pad;
-    sfmt.format.width = w;
-    sfmt.format.height = h;
-    sfmt.format.code = code;
-    sfmt.format.field = V4L2_FIELD_NONE;
-    sfmt.format.colorspace = V4L2_COLORSPACE_RAW;
-
-    if (xioctl(fd, VIDIOC_SUBDEV_S_FMT, &sfmt) == -1) {
-        close(fd);
-        fail("VIDIOC_SUBDEV_S_FMT " + label + " pad " + std::to_string(pad));
-    }
-
-    // Report what the subdev actually accepted (it may clamp/coerce).
-    if (sfmt.format.code != code || sfmt.format.width != w ||
-        sfmt.format.height != h) {
-        std::cerr << "mocap-sanity: warning: " << label << " pad " << pad
-                  << " coerced to code 0x" << std::hex << sfmt.format.code
-                  << std::dec << " " << sfmt.format.width << "x"
-                  << sfmt.format.height << "\n";
-    }
-    close(fd);
-}
-
-void configure_subdevs(const std::string &media_dev,
-                       const std::string &sensor_name,
-                       const std::string &csi_name, uint32_t mbus_code,
-                       unsigned w, unsigned h) {
-    int mfd = open(media_dev.c_str(), O_RDWR);
-    if (mfd == -1)
-        fail("open " + media_dev);
-    Topology t = get_topology(mfd);
-    close(mfd);
-
-    std::cout << "Resolving subdevs:\n";
-    const std::string sensor_path = subdev_path_for(t, sensor_name);
-    const std::string csi_path = subdev_path_for(t, csi_name);
-
-    std::cout << "Setting pad formats (code 0x" << std::hex << mbus_code
-              << std::dec << " " << w << "x" << h << "):\n";
-    // Source-to-sink order so propagation is consistent.
-    set_subdev_format(sensor_path, kSensorSrcPad, mbus_code, w, h,
-                      sensor_name + " src");
-    set_subdev_format(csi_path, kCsiSinkPad, mbus_code, w, h, csi_name + " sink");
-    set_subdev_format(csi_path, kCsiSrcPad, mbus_code, w, h, csi_name + " src");
-    std::cout << "Pipeline configured.\n";
+// Write a single-channel (grayscale) 8-bpp frame as PNG. The captured buffer
+// may have row padding, so the per-row stride (bytesperline) is passed through
+// to stb. Returns false on encode/write failure.
+bool write_png_gray(const std::string &path, const uint8_t *data, unsigned w,
+                    unsigned h, unsigned stride) {
+    const int row_bytes = static_cast<int>(stride ? stride : w);
+    return stbi_write_png(path.c_str(), static_cast<int>(w),
+                          static_cast<int>(h), 1, data, row_bytes) != 0;
 }
 
 }  // namespace
 
 int main(int argc, char *argv[]) {
+    prog_name() = "mocap-sanity";  // prefix for shared pipeline error messages
     argparse::ArgumentParser program("mocap-sanity", "1.0");
     program.add_description(
         "Configure the CSI->DMA graph and capture a single 8-bpp RAW frame.");
@@ -262,8 +74,9 @@ int main(int argc, char *argv[]) {
         .default_value(std::string("/dev/video0"))
         .help("V4L2 capture device node");
     program.add_argument("-o", "--output")
-        .default_value(std::string("./image_capture.raw"))
-        .help("output file for the raw frame");
+        .default_value(std::string("./image_capture.png"))
+        .help("output file; a .png extension writes a grayscale PNG, "
+              "otherwise raw frame bytes");
     program.add_argument("-W", "--width")
         .default_value(1280u)
         .scan<'u', unsigned>()
@@ -273,7 +86,7 @@ int main(int argc, char *argv[]) {
         .scan<'u', unsigned>()
         .help("frame height in pixels");
     program.add_argument("-f", "--format")
-        .default_value(std::string("GRBG"))
+        .default_value(std::string("GREY"))
         .help("4-char V4L2 pixelformat fourcc (8-bpp RAW, e.g. GRBG)");
     program.add_argument("-m", "--media")
         .default_value(std::string("/dev/media0"))
@@ -368,11 +181,13 @@ int main(int argc, char *argv[]) {
         fail("VIDIOC_S_FMT");
 
     const unsigned n_planes = mplane ? fmt.fmt.pix_mp.num_planes : 1;
+    const uint32_t got =
+        mplane ? fmt.fmt.pix_mp.pixelformat : fmt.fmt.pix.pixelformat;
+    const unsigned gw = mplane ? fmt.fmt.pix_mp.width : fmt.fmt.pix.width;
+    const unsigned gh = mplane ? fmt.fmt.pix_mp.height : fmt.fmt.pix.height;
+    const unsigned bpl = mplane ? fmt.fmt.pix_mp.plane_fmt[0].bytesperline
+                                : fmt.fmt.pix.bytesperline;
     {
-        const uint32_t got =
-            mplane ? fmt.fmt.pix_mp.pixelformat : fmt.fmt.pix.pixelformat;
-        const unsigned gw = mplane ? fmt.fmt.pix_mp.width : fmt.fmt.pix.width;
-        const unsigned gh = mplane ? fmt.fmt.pix_mp.height : fmt.fmt.pix.height;
         std::cout << "Video node: " << gw << "x" << gh << " '" << fourcc_str(got)
                   << "' " << n_planes << " plane(s)"
                   << (mplane ? " [mplane]" : "") << "\n";
@@ -455,19 +270,42 @@ int main(int argc, char *argv[]) {
     if (xioctl(fd, VIDIOC_DQBUF, &buf) == -1)
         fail("VIDIOC_DQBUF");
 
-    std::ofstream out(output, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        std::cerr << "mocap-sanity: cannot open " << output << " for writing\n";
-        return 1;
+    if (wants_png(output)) {
+        // PNG encode: single-channel grayscale from plane 0. The OV9281 is a
+        // mono sensor, so 8-bpp RAW (GREY or a cosmetic Bayer8 label) is one
+        // luma byte per pixel. A Bayer mosaic is written undebayered.
+        if (n_planes != 1) {
+            std::cerr << "mocap-sanity: PNG output supports single-plane "
+                         "formats only (got "
+                      << n_planes << " planes); use a raw output path\n";
+            return 1;
+        }
+        const auto *data =
+            static_cast<const uint8_t *>(buffers[buf.index][0].start);
+        if (!write_png_gray(output, data, gw, gh, bpl)) {
+            std::cerr << "mocap-sanity: failed to encode PNG to " << output
+                      << "\n";
+            return 1;
+        }
+        std::cout << "Wrote " << gw << "x" << gh << " grayscale PNG to "
+                  << output << "\n";
+    } else {
+        std::ofstream out(output, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            std::cerr << "mocap-sanity: cannot open " << output
+                      << " for writing\n";
+            return 1;
+        }
+        size_t total = 0;
+        for (unsigned p = 0; p < n_planes; ++p) {
+            const size_t used = mplane ? planes[p].bytesused : buf.bytesused;
+            out.write(static_cast<const char *>(buffers[buf.index][p].start),
+                      used);
+            total += used;
+        }
+        out.close();
+        std::cout << "Wrote " << total << " bytes to " << output << "\n";
     }
-    size_t total = 0;
-    for (unsigned p = 0; p < n_planes; ++p) {
-        const size_t used = mplane ? planes[p].bytesused : buf.bytesused;
-        out.write(static_cast<const char *>(buffers[buf.index][p].start), used);
-        total += used;
-    }
-    out.close();
-    std::cout << "Wrote " << total << " bytes to " << output << "\n";
 
     if (xioctl(fd, VIDIOC_STREAMOFF, &type) == -1)
         fail("VIDIOC_STREAMOFF");
