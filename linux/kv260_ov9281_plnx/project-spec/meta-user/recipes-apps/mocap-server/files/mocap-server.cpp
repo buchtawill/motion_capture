@@ -28,6 +28,7 @@
 #include <linux/videodev2.h>
 
 #include <mocap/argparse.hpp>
+#include <mocap/auto_exposure.hpp>
 #include <mocap/ov9281_pipeline.hpp>
 
 using namespace mocap;
@@ -144,7 +145,9 @@ static bool send_all(int sock, const void *data, size_t len) {
 
 static void capture_loop(int fd, uint32_t buf_type, bool mplane,
                          unsigned n_planes,
-                         std::vector<std::vector<MappedPlane>> &buffers) {
+                         std::vector<std::vector<MappedPlane>> &buffers,
+                         AutoExposure *ae, unsigned frame_w,
+                         unsigned frame_h, unsigned frame_stride) {
     uint32_t seq = 0;
     while (!g_quit) {
         pollfd pfd{fd, POLLIN, 0};
@@ -173,6 +176,10 @@ static void capture_loop(int fd, uint32_t buf_type, bool mplane,
 
         const size_t used = mplane ? planes[0].bytesused : buf.bytesused;
         if (used > 0) {
+            if (ae)
+                ae->update(static_cast<const uint8_t *>(
+                               buffers[buf.index][0].start),
+                           frame_w, frame_h, frame_stride);
             g_ring.push(buffers[buf.index][0].start, used, seq++,
                         static_cast<uint32_t>(buf.timestamp.tv_sec),
                         static_cast<uint32_t>(buf.timestamp.tv_usec));
@@ -240,6 +247,22 @@ int main(int argc, char *argv[]) {
         .default_value(false)
         .implicit_value(true)
         .help("skip media/subdev configuration (also skips --vblank/--fps)");
+    program.add_argument("--ae")
+        .default_value(false)
+        .implicit_value(true)
+        .help("enable auto-exposure control loop");
+    program.add_argument("--ae-target")
+        .default_value(128.0)
+        .scan<'g', double>()
+        .help("target mean brightness (0-255)");
+    program.add_argument("--ae-speed")
+        .default_value(0.3)
+        .scan<'g', double>()
+        .help("convergence speed (0.0-1.0; lower = slower)");
+    program.add_argument("--ae-interval")
+        .default_value(15)
+        .scan<'d', int>()
+        .help("frames between control updates");
 
     try {
         program.parse_args(argc, argv);
@@ -262,6 +285,10 @@ int main(int argc, char *argv[]) {
     const std::string fps_arg = program.get<std::string>("--fps");
     const std::string vblank_arg = program.get<std::string>("--vblank");
     const bool skip_setup = program.get<bool>("--skip-setup");
+    const bool enable_ae = program.get<bool>("--ae");
+    const double ae_target = program.get<double>("--ae-target");
+    const double ae_speed = program.get<double>("--ae-speed");
+    const int ae_interval = program.get<int>("--ae-interval");
 
     if (!mode_arg.empty()) {
         const SensorMode *m = find_mode(mode_arg);
@@ -274,6 +301,7 @@ int main(int argc, char *argv[]) {
 
     // --- pipeline setup (shared with mocap-sanity / mocap-perf) --------------
 
+    std::string sensor_path;
     if (!skip_setup) {
         uint32_t mbus_code;
         if (!mbus_arg.empty()) {
@@ -285,8 +313,8 @@ int main(int argc, char *argv[]) {
                 die("no default mbus code for '" + fourcc_str(pixfmt) +
                     "'; pass --mbus-code");
         }
-        const std::string sensor_path = configure_subdevs(
-            media_dev, sensor_name, csi_name, mbus_code, width, height);
+        sensor_path = configure_subdevs(media_dev, sensor_name, csi_name,
+                                        mbus_code, width, height);
 
         if (fps_arg != "max") {
             double target;
@@ -397,10 +425,25 @@ int main(int argc, char *argv[]) {
     sigaction(SIGTERM, &sa, nullptr);
     signal(SIGPIPE, SIG_IGN);
 
+    // --- auto-exposure --------------------------------------------------------
+
+    AutoExposure ae;
+    AutoExposure *ae_ptr = nullptr;
+    if (enable_ae) {
+        if (sensor_path.empty())
+            die("--ae requires pipeline setup (incompatible with --skip-setup)");
+        AEConfig aecfg;
+        aecfg.target_mean = ae_target;
+        aecfg.speed = ae_speed;
+        aecfg.interval = ae_interval;
+        if (ae.init(sensor_path, aecfg))
+            ae_ptr = &ae;
+    }
+
     // --- capture thread -----------------------------------------------------
 
     std::thread cap_thread(capture_loop, vfd, buf_type, mplane, n_planes,
-                           std::ref(buffers));
+                           std::ref(buffers), ae_ptr, gw, gh, bpl);
 
     // --- TCP server ---------------------------------------------------------
 
@@ -482,6 +525,7 @@ int main(int argc, char *argv[]) {
     for (auto &bp : buffers)
         for (auto &pl : bp)
             munmap(pl.start, pl.length);
+    ae.close();
     close(vfd);
     close(sfd);
     std::cout << "Stopped.\n";
