@@ -62,6 +62,8 @@ module isp_math_wrapper (
     // -------------------------------------------------------------------------
     // Interrupt
     // -------------------------------------------------------------------------
+    (* X_INTERFACE_INFO = "xilinx.com:signal:interrupt:1.0 frame_done_irq_o INTERRUPT" *)
+    (* X_INTERFACE_PARAMETER = "SENSITIVITY EDGE_RISING" *)
     output wire         frame_done_irq_o
 );
 
