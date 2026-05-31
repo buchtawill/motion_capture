@@ -75,20 +75,20 @@ module tb_isp_histogram;
         .STREAM_WIDTH (STREAM_WIDTH),
         .RAM_WIDTH    (RAM_WIDTH)
     ) dut_isp_histogram (
-        .clk_i          (clk),
-        .rst_n          (rst_n),
-        .hist_en_i      (hist_en_i),
-        .ram_scrub_i    (ram_scrub_i),
-        .hist_rdy_o     (hist_rdy_o),
-        .err_o          (err_o),
+        .clk_i            (clk),
+        .rst_n            (rst_n),
+        .hist_en_i        (hist_en_i),
+        .ram_scrub_i      (ram_scrub_i),
+        .hist_rdy_o       (hist_rdy_o),
+        .err_o            (err_o),
 
-        .ram_addr_i     (ram_addr_i),
-        .ram_data_o     (ram_data_o),
-        .ram_data_o_vld (ram_data_o_vld),
+        .ram_addr_i       (ram_addr_i),
+        .ram_data_o       (ram_data_o),
+        .ram_data_o_vld   (ram_data_o_vld),
 
-        .pix_data_i     (pix_data_i),
-        .pix_data_vld_i (pix_data_vld_i),
-        .pix_data_rdy_i (pix_data_rdy_i)
+        .pix_data_i       (pix_data_i),
+        .pix_data_vld_i   (pix_data_vld_i),
+        .pix_data_rdy_i   (pix_data_rdy_i)
     );
 
     // =========================================================================
@@ -221,6 +221,29 @@ module tb_isp_histogram;
         pix_data_vld_i = 1'b0;
         pix_data_rdy_i = 1'b0;
         pix_data_i     = '0;
+    endtask
+
+    // stream_full_image_zeros — scrub RAM, stream W×H zero-valued pixels,
+    //                          verify hist_mem[0x00] == W*H.
+    task automatic stream_full_image_zeros(input int w, input int h);
+        int total_pixels;
+        total_pixels = w * h;
+        $display("\n[%0t ns] --- Full-image zeros %0dx%0d (%0d pixels) ---", $time, w, h, total_pixels);
+        hist_en_i   = 1'b0;
+        @(posedge clk);
+        ram_scrub_i = 1'b1;
+        @(posedge clk);
+        ram_scrub_i = 1'b0;
+        wait_scrub_done(280);
+        repeat(260) @(posedge clk);
+
+        hist_en_i = 1'b1;
+        for (int i = 0; i < (total_pixels / 4); i++) begin
+            send_beat(32'h00000000, 0);
+            repeat(3) @(posedge clk);
+        end
+        repeat(8) @(posedge clk);
+        check_bin($sformatf("All zero %0dx%0d", w, h), 8'h0, total_pixels);
     endtask
 
     // wait_drain — stall for DRAIN_CYCLES so the FSM can fully consume all
@@ -393,18 +416,12 @@ module tb_isp_histogram;
         repeat(260)@(posedge clk);
         check_all_zero("post-scrub");
 
-        repeat(20)@(posedge clk);
-        $display("\n[%0t ns] --- Test 6: Sending all zeros for one full image ---", $time);
-        hist_en_i   = 1'b1;
-        // Stream of all zeros
-        for (int i = 0; i < (1280*800/4); i++)begin
-            send_beat(32'h00000000, 0);
-            repeat(3)@(posedge clk);
-        end
-
-        repeat(8)@(posedge clk);
-
-        check_bin("All zero", 8'h0, 1280*800);
+        // ----------------------------------------------------------------
+        // Test 6: Full-image zeros at each supported resolution
+        // ----------------------------------------------------------------
+        stream_full_image_zeros(1280, 800);
+        stream_full_image_zeros( 640, 400);
+        stream_full_image_zeros(1280, 720);
 
         // ----------------------------------------------------------------
         // Test 7: RAM read-port sanity
@@ -509,9 +526,9 @@ module tb_isp_histogram;
     // Timeout watchdog — abort if the simulation hangs inside a wait loop
     // =========================================================================
     initial begin : timeout_watchdog
-        #10ms;
-        $display("[%0t ns] [TIMEOUT] Simulation exceeded 10 ms — possible hang", $time);
-        $finish;
+        #20ms;
+        $display("[%0t ns] [TIMEOUT] Simulation exceeded 20 ms — possible hang", $time);
+        $fatal;
     end
 
     // =========================================================================

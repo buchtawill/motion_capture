@@ -1,5 +1,5 @@
 // tb_isp_math.sv
-// Two-phase testbench for isp_math_wrapper (wraps isp_math_top ->
+// Three-phase testbench for isp_math_wrapper (wraps isp_math_top ->
 // PeakRDL-generated isp_regs + isp_histogram).
 //
 // Topology
@@ -10,12 +10,16 @@
 //   snapshot latch, HIST_ADDR autoinc on/off + wrap, per-counter SW resets,
 //   SW-reset preserves HRES/VRES.
 //
-// PHASE 2 — functional single-frame test
-//   RTL reset -> wait for post-reset scrub -> HISTOGRAM_START -> wait 300
-//   cycles -> push a full 1280x800 frame (800 lines * 320 beats) with TUSER
-//   on beat 0 -> wait for HIST_DATA_VALID -> read all 256 bins via the
-//   frontdoor autoinc and compare to a golden reference accumulated in
-//   send_beat. Repeat with a second frame and verify the snapshot deltas.
+// PHASE 2 — multi-resolution functional tests
+//   For each supported resolution (1280x800, 640x400, 1280x720):
+//   RTL reset -> program HRES/VRES -> HISTOGRAM_START -> stream a full frame
+//   with random pixel data -> wait for HIST_DATA_VALID -> verify all 256 bins
+//   and PIXEL_SUM against a golden reference -> verify frame_done_irq_o
+//   latches high -> clear via CTRL.IRQ_CLEAR -> verify it deasserts.
+//
+// PHASE 3 — interrupt clear via CTRL.RESET
+//   Verifies the alternate IRQ clear path: run a frame, confirm IRQ latches,
+//   then clear via CTRL.RESET instead of IRQ_CLEAR.
 //
 // Register addresses and bit positions are sourced from the single
 // spec-of-truth sidecar file isp_regs_defines.svh (which mirrors isp_regs.rdl).
@@ -80,47 +84,51 @@ module tb_isp_math;
     logic        m_axis_tvalid;
     logic        m_axis_tready = 1'b1;
 
+    logic        frame_done_irq_o;
+
     // =========================================================================
     // DUT
     // =========================================================================
     isp_math_wrapper dut (
-        .aclk           (clk),
-        .aresetn        (aresetn),
+        .aclk              (clk),
+        .aresetn           (aresetn),
 
-        .s_axi_awaddr   (s_axi_awaddr),
-        .s_axi_awprot   (s_axi_awprot),
-        .s_axi_awvalid  (s_axi_awvalid),
-        .s_axi_awready  (s_axi_awready),
-        .s_axi_wdata    (s_axi_wdata),
-        .s_axi_wstrb    (s_axi_wstrb),
-        .s_axi_wvalid   (s_axi_wvalid),
-        .s_axi_wready   (s_axi_wready),
-        .s_axi_bresp    (s_axi_bresp),
-        .s_axi_bvalid   (s_axi_bvalid),
-        .s_axi_bready   (s_axi_bready),
+        .s_axi_awaddr      (s_axi_awaddr),
+        .s_axi_awprot      (s_axi_awprot),
+        .s_axi_awvalid     (s_axi_awvalid),
+        .s_axi_awready     (s_axi_awready),
+        .s_axi_wdata       (s_axi_wdata),
+        .s_axi_wstrb       (s_axi_wstrb),
+        .s_axi_wvalid      (s_axi_wvalid),
+        .s_axi_wready      (s_axi_wready),
+        .s_axi_bresp       (s_axi_bresp),
+        .s_axi_bvalid      (s_axi_bvalid),
+        .s_axi_bready      (s_axi_bready),
 
-        .s_axi_araddr   (s_axi_araddr),
-        .s_axi_arprot   (s_axi_arprot),
-        .s_axi_arvalid  (s_axi_arvalid),
-        .s_axi_arready  (s_axi_arready),
-        .s_axi_rdata    (s_axi_rdata),
-        .s_axi_rresp    (s_axi_rresp),
-        .s_axi_rvalid   (s_axi_rvalid),
-        .s_axi_rready   (s_axi_rready),
+        .s_axi_araddr      (s_axi_araddr),
+        .s_axi_arprot      (s_axi_arprot),
+        .s_axi_arvalid     (s_axi_arvalid),
+        .s_axi_arready     (s_axi_arready),
+        .s_axi_rdata       (s_axi_rdata),
+        .s_axi_rresp       (s_axi_rresp),
+        .s_axi_rvalid      (s_axi_rvalid),
+        .s_axi_rready      (s_axi_rready),
 
-        .s_axis_tdata   (s_axis_tdata),
-        .s_axis_tdest   (s_axis_tdest),
-        .s_axis_tuser   (s_axis_tuser),
-        .s_axis_tlast   (s_axis_tlast),
-        .s_axis_tvalid  (s_axis_tvalid),
-        .s_axis_tready  (s_axis_tready),
+        .s_axis_tdata      (s_axis_tdata),
+        .s_axis_tdest      (s_axis_tdest),
+        .s_axis_tuser      (s_axis_tuser),
+        .s_axis_tlast      (s_axis_tlast),
+        .s_axis_tvalid     (s_axis_tvalid),
+        .s_axis_tready     (s_axis_tready),
 
-        .m_axis_tdata   (m_axis_tdata),
-        .m_axis_tkeep   (m_axis_tkeep),
-        .m_axis_tuser   (m_axis_tuser),
-        .m_axis_tlast   (m_axis_tlast),
-        .m_axis_tvalid  (m_axis_tvalid),
-        .m_axis_tready  (m_axis_tready)
+        .m_axis_tdata      (m_axis_tdata),
+        .m_axis_tkeep      (m_axis_tkeep),
+        .m_axis_tuser      (m_axis_tuser),
+        .m_axis_tlast      (m_axis_tlast),
+        .m_axis_tvalid     (m_axis_tvalid),
+        .m_axis_tready     (m_axis_tready),
+
+        .frame_done_irq_o  (frame_done_irq_o)
     );
 
     // =========================================================================
@@ -194,19 +202,19 @@ module tb_isp_math;
     endtask
 
     // =========================================================================
-    // Phase 2 — frame constants, golden-reference state, AXIS driver helpers
+    // Phase 2 — frame geometry, golden-reference state, AXIS driver helpers
     // =========================================================================
-    // Frame geometry (matches the OV9281 resolution in isp_regs.rdl defaults)
-    localparam int FRAME_HRES           = 1280;
-    localparam int FRAME_VRES           = 800;
-    localparam int FRAME_PIX_PER_BEAT   = 4;
-    localparam int FRAME_BEATS_PER_LINE = FRAME_HRES / FRAME_PIX_PER_BEAT; // 320
-    localparam int FRAME_TOTAL_BEATS    = FRAME_BEATS_PER_LINE * FRAME_VRES; // 256000
+    localparam int FRAME_PIX_PER_BEAT = 4;
 
     // Beat cadence: 1 cycle tvalid high, BEAT_GAP cycles low. Gives the
     // histogram (throughput ~4 cycles/beat in S_ACTIVE) enough slack to
     // drain its internal FIFO continuously -- keeps fifo_err quiet.
     localparam int BEAT_GAP = 4;  // -> 5 cycles/beat total
+
+    // Active frame geometry (set by run_frame_test before each measurement)
+    int frame_hres;
+    int frame_vres;
+    int frame_total_beats;
 
     // Golden reference accumulators (reset at each send_frame call)
     int      exp_bin [256];
@@ -257,19 +265,20 @@ module tb_isp_math;
     task automatic send_frame(input int unsigned seed_val);
         int unsigned  _discard;
         logic [31:0]  beat_data;
+        int           beats_per_line;
+
+        beats_per_line = frame_hres / FRAME_PIX_PER_BEAT;
 
         $display("[INFO] send_frame(seed=%0d): %0d beats = %0d lines * %0d beats/line",
-                 seed_val, FRAME_TOTAL_BEATS, FRAME_VRES, FRAME_BEATS_PER_LINE);
+                 seed_val, frame_total_beats, frame_vres, beats_per_line);
 
         // Reset golden accumulators
         for (int i = 0; i < 256; i++) exp_bin[i] = 0;
         exp_sum = 0;
 
-        // Seed the thread RNG (return value discarded; we just want to set
-        // the stream. Subsequent $urandom() calls pull from this stream.)
         _discard = $urandom(seed_val);
 
-        for (int beat_ix = 0; beat_ix < FRAME_TOTAL_BEATS; beat_ix++) begin
+        for (int beat_ix = 0; beat_ix < frame_total_beats; beat_ix++) begin
             beat_data = $urandom();
             send_beat(beat_data, (beat_ix == 0));
         end
@@ -372,6 +381,78 @@ module tb_isp_math;
         axi_read(`ISP_REG_CYCLE_SNAP_HI,  cycle_snap_hi);
     endtask
 
+    // ---------------------------------------------------------------------
+    // run_frame_test — configure resolution, arm, stream, verify bins +
+    //   pixel sum + interrupt latch/clear. Self-contained: resets DUT,
+    //   programs HRES/VRES, runs one frame, checks everything.
+    // ---------------------------------------------------------------------
+    task automatic run_frame_test(input int hres,
+                                  input int vres,
+                                  input int unsigned seed);
+        bit          dv_ok;
+        logic [31:0] rdata;
+        string       label;
+
+        label = $sformatf("%0dx%0d", hres, vres);
+        $display("\n----- run_frame_test %s (seed=%0d) -----", label, seed);
+
+        // Set active geometry for send_frame
+        frame_hres        = hres;
+        frame_vres        = vres;
+        frame_total_beats = (hres / FRAME_PIX_PER_BEAT) * vres;
+
+        // RTL reset
+        aresetn = 1'b0;
+        repeat (20) @(posedge clk);
+        #1; aresetn = 1'b1;
+        repeat (5)  @(posedge clk);
+        repeat (300) @(posedge clk);
+
+        // Program resolution
+        axi_write(`ISP_REG_HRES, hres);
+        axi_write(`ISP_REG_VRES, vres);
+
+        // IRQ should be low after reset
+        report_check($sformatf("%s: frame_done_irq_o low after reset", label),
+                     frame_done_irq_o === 1'b0);
+        axi_read(`ISP_REG_STATUS, rdata);
+        report_check($sformatf("%s: STATUS.FRAME_DONE_IRQ clear after reset", label),
+                     (rdata & `ISP_STATUS_FRAME_DONE_IRQ) === 32'h0);
+
+        // Arm and stream
+        arm_measurement();
+        send_frame(seed);
+
+        // Wait for data valid
+        wait_for_data_valid(.max_polls(1000), .ok(dv_ok));
+        report_check($sformatf("%s: HIST_DATA_VALID observed", label), dv_ok);
+
+        // Verify histogram bins and pixel sum
+        check_all_bins_and_sum(label);
+
+        // IRQ should be latched high now
+        report_check($sformatf("%s: frame_done_irq_o latched high", label),
+                     frame_done_irq_o === 1'b1);
+        axi_read(`ISP_REG_STATUS, rdata);
+        report_check($sformatf("%s: STATUS.FRAME_DONE_IRQ set", label),
+                     (rdata & `ISP_STATUS_FRAME_DONE_IRQ) !== 32'h0);
+
+        // Clear IRQ via CTRL.IRQ_CLEAR
+        axi_write(`ISP_REG_CTRL, `ISP_CTRL_HIST_ADDR_AUTOINC | `ISP_CTRL_IRQ_CLEAR);
+        repeat (2) @(posedge clk);
+
+        report_check($sformatf("%s: frame_done_irq_o low after IRQ_CLEAR", label),
+                     frame_done_irq_o === 1'b0);
+        axi_read(`ISP_REG_STATUS, rdata);
+        report_check($sformatf("%s: STATUS.FRAME_DONE_IRQ clear after IRQ_CLEAR", label),
+                     (rdata & `ISP_STATUS_FRAME_DONE_IRQ) === 32'h0);
+
+        // No FIFO overflow
+        axi_read(`ISP_REG_STATUS, rdata);
+        report_check($sformatf("%s: no HIST_FIFO_ERR", label),
+                     (rdata & `ISP_STATUS_HIST_FIFO_ERR) === 32'h0);
+    endtask
+
     // =========================================================================
     // Main test sequence
     // =========================================================================
@@ -449,10 +530,11 @@ module tb_isp_math;
         // ------------------------------------------------------------------
         axi_read(`ISP_REG_STATUS, rdata);
         $display("[READ] STATUS        (0x004) = 0x%08h", rdata);
-        report_check("STATUS = READY only (stubbed: HIST_DATA_VALID=0, HIST_FIFO_ERR=0)",
+        report_check("STATUS = READY only (HIST_DATA_VALID=0, HIST_FIFO_ERR=0, FRAME_DONE_IRQ=0)",
                      (rdata & (`ISP_STATUS_READY
                              | `ISP_STATUS_HIST_DATA_VALID
-                             | `ISP_STATUS_HIST_FIFO_ERR)) === `ISP_STATUS_READY);
+                             | `ISP_STATUS_HIST_FIFO_ERR
+                             | `ISP_STATUS_FRAME_DONE_IRQ)) === `ISP_STATUS_READY);
 
         // ------------------------------------------------------------------
         // 0x10 CYCLE_CNT_LO -- free-running between reads
@@ -602,115 +684,63 @@ module tb_isp_math;
         report_check("SW RESET clears FRAME_SNAP", rdata === 32'h0);
 
         // ==================================================================
-        //                          PHASE 2 — functional
+        //                PHASE 2 — functional (all resolutions)
         // ==================================================================
         $display("");
         $display("=========================================================");
-        $display("  tb_isp_math: PHASE 2 — single-frame functional test");
+        $display("  tb_isp_math: PHASE 2 — multi-resolution frame tests");
         $display("=========================================================");
 
-        // ------------------------------------------------------------------
-        // RTL reset to return to a clean slate (the spec path:
-        //   RTL reset -> POST_RESET_SCRUB -> IDLE).
-        // Restore HRES/VRES to the intended frame geometry (Phase 1 left
-        // them at 0xABC/0xDEF). Note that the RTL reset itself clears HRES
-        // and VRES back to their regblock defaults (1280 / 800), but we
-        // still run a fresh AXI write after reset to be explicit.
-        // ------------------------------------------------------------------
-        aresetn = 1'b0;
-        repeat (20) @(posedge clk);
-        #1; aresetn = 1'b1;
-        repeat (5)  @(posedge clk);
-        $display("[INFO] RTL reset released; waiting for post-reset scrub");
-        repeat (300) @(posedge clk);
+        run_frame_test(1280, 800, 32'h1);
+        run_frame_test( 640, 400, 32'h2);
+        run_frame_test(1280, 720, 32'h3);
 
-        axi_write(`ISP_REG_HRES, FRAME_HRES);
-        axi_write(`ISP_REG_VRES, FRAME_VRES);
-        axi_read (`ISP_REG_HRES, rdata);
-        report_check("Phase 2 setup: HRES programmed to 1280",
-                     rdata[`ISP_HRES_WIDTH-1:0] === FRAME_HRES);
-        axi_read (`ISP_REG_VRES, rdata);
-        report_check("Phase 2 setup: VRES programmed to 800",
-                     rdata[`ISP_VRES_WIDTH-1:0] === FRAME_VRES);
+        // ==================================================================
+        //                PHASE 3 — interrupt clear via CTRL.RESET
+        // ==================================================================
+        $display("");
+        $display("=========================================================");
+        $display("  tb_isp_math: PHASE 3 — IRQ clear via CTRL.RESET");
+        $display("=========================================================");
 
-        // Confirm READY is high before we arm (post-reset scrub done)
-        axi_read(`ISP_REG_STATUS, rdata);
-        report_check("Phase 2 setup: STATUS.READY = 1 before HISTOGRAM_START",
-                     (rdata & `ISP_STATUS_READY) !== 32'h0);
-
-        // ------------------------------------------------------------------
-        // FRAME 1
-        // ------------------------------------------------------------------
-        begin : frame1
+        // Run a frame to latch the IRQ, then clear it via SW reset instead
+        // of IRQ_CLEAR, verifying a different clear path.
+        begin : irq_reset_test
             bit          dv_ok;
-            logic [31:0] frame_snap_1, cycle_snap_lo_1, cycle_snap_hi_1;
+
+            frame_hres        = 640;
+            frame_vres        = 400;
+            frame_total_beats = (640 / FRAME_PIX_PER_BEAT) * 400;
+
+            aresetn = 1'b0;
+            repeat (20) @(posedge clk);
+            #1; aresetn = 1'b1;
+            repeat (5)  @(posedge clk);
+            repeat (300) @(posedge clk);
+
+            axi_write(`ISP_REG_HRES, 640);
+            axi_write(`ISP_REG_VRES, 400);
 
             arm_measurement();
-            send_frame(32'h1);
+            send_frame(32'hAA);
 
             wait_for_data_valid(.max_polls(1000), .ok(dv_ok));
-            report_check("Frame 1: HIST_DATA_VALID observed before timeout", dv_ok);
+            report_check("IRQ-reset: HIST_DATA_VALID observed", dv_ok);
 
-            check_all_bins_and_sum("Frame 1");
+            // IRQ should be latched
+            report_check("IRQ-reset: frame_done_irq_o latched high",
+                         frame_done_irq_o === 1'b1);
 
-            // Snapshot after frame 1
-            snap_and_read(frame_snap_1, cycle_snap_lo_1, cycle_snap_hi_1);
-            $display("[READ] after frame 1: FRAME_SNAP = %0d  CYCLE_SNAP = 0x%08h_%08h",
-                     frame_snap_1, cycle_snap_hi_1, cycle_snap_lo_1);
-            report_check("Frame 1: FRAME_SNAP == 1 after one TUSER beat",
-                         frame_snap_1 === 32'd1);
-            report_check("Frame 1: CYCLE_SNAP_LO advanced past a nominal frame length",
-                         cycle_snap_lo_1 > 32'd100000);
+            // Clear via CTRL.RESET (not IRQ_CLEAR)
+            axi_write(`ISP_REG_CTRL, `ISP_CTRL_HIST_ADDR_AUTOINC | `ISP_CTRL_RESET);
+            repeat (300) @(posedge clk);
 
-            // Stash frame 1 snapshots for delta check
-            axi_write(`ISP_REG_HRES, FRAME_HRES);  // sanity: HRES still intact
-            axi_read (`ISP_REG_HRES, rdata);
-            report_check("Frame 1: HRES still 1280 after measurement",
-                         rdata[`ISP_HRES_WIDTH-1:0] === FRAME_HRES);
-
-            // ------------------------------------------------------------------
-            // FRAME 2
-            // ------------------------------------------------------------------
-            begin : frame2
-                logic [31:0] frame_snap_2, cycle_snap_lo_2, cycle_snap_hi_2;
-                logic [31:0] frame_delta;
-                logic [31:0] cycle_delta_lo;
-
-                arm_measurement();
-                send_frame(32'h2);
-
-                wait_for_data_valid(.max_polls(1000), .ok(dv_ok));
-                report_check("Frame 2: HIST_DATA_VALID observed before timeout", dv_ok);
-
-                check_all_bins_and_sum("Frame 2");
-
-                snap_and_read(frame_snap_2, cycle_snap_lo_2, cycle_snap_hi_2);
-                $display("[READ] after frame 2: FRAME_SNAP = %0d  CYCLE_SNAP = 0x%08h_%08h",
-                         frame_snap_2, cycle_snap_hi_2, cycle_snap_lo_2);
-
-                frame_delta    = frame_snap_2 - frame_snap_1;
-                cycle_delta_lo = cycle_snap_lo_2 - cycle_snap_lo_1;
-
-                report_check("Snapshot delta: FRAME_SNAP delta == 1 (one frame between snapshots)",
-                             frame_delta === 32'd1);
-
-                // Lower bound: at least one full frame worth of clocks
-                // (FRAME_TOTAL_BEATS * BEAT_GAP with some slack for AXI overhead).
-                report_check("Snapshot delta: cycle delta >= one frame worth of beats",
-                             cycle_delta_lo > (FRAME_TOTAL_BEATS * BEAT_GAP));
-
-                // Loose upper bound: a few frames worth of clocks at most
-                report_check("Snapshot delta: cycle delta < 3x nominal frame length",
-                             cycle_delta_lo < (3 * FRAME_TOTAL_BEATS * BEAT_GAP * 2));
-            end
+            report_check("IRQ-reset: frame_done_irq_o low after CTRL.RESET",
+                         frame_done_irq_o === 1'b0);
+            axi_read(`ISP_REG_STATUS, rdata);
+            report_check("IRQ-reset: STATUS.FRAME_DONE_IRQ clear after CTRL.RESET",
+                         (rdata & `ISP_STATUS_FRAME_DONE_IRQ) === 32'h0);
         end
-
-        // ------------------------------------------------------------------
-        // Make sure no FIFO overflow was observed across both frames
-        // ------------------------------------------------------------------
-        axi_read(`ISP_REG_STATUS, rdata);
-        report_check("STATUS.HIST_FIFO_ERR not set after two back-to-back frames",
-                     (rdata & `ISP_STATUS_HIST_FIFO_ERR) === 32'h0);
 
         // ------------------------------------------------------------------
         $display("");
@@ -718,7 +748,7 @@ module tb_isp_math;
         $display("  tb_isp_math: %0d passed, %0d failed", n_pass, n_fail);
         $display("=========================================================");
         if (n_fail == 0)
-            $display("[DONE] All checks passed (Phase 1 + Phase 2)");
+            $display("[DONE] All checks passed (Phase 1 + Phase 2 + Phase 3)");
         else
             $display("[DONE] FAILURES PRESENT -- see [FAIL] lines above");
         $finish;

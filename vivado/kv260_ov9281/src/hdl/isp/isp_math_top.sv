@@ -87,18 +87,26 @@ module isp_wrapper #(
     output wire [AXIS_TUSER_WIDTH-1:0]    m_axis_tuser,
     output wire                           m_axis_tlast,
     output wire                           m_axis_tvalid,
-    input  wire                           m_axis_tready
+    input  wire                           m_axis_tready,
+
+    // -------------------------------------------------------------------------
+    // Interrupt
+    // -------------------------------------------------------------------------
+    output wire                           frame_done_irq_o
 );
 
     // =========================================================================
     // AXI-Stream passthrough (no stall, no backpressure, zero datapath latency)
     // =========================================================================
-    assign m_axis_tdata  = s_axis_tdata;
-    assign m_axis_tkeep  = {AXIS_TKEEP_WIDTH{1'b1}};
-    assign m_axis_tuser  = s_axis_tuser;
-    assign m_axis_tlast  = s_axis_tlast;
-    assign m_axis_tvalid = s_axis_tvalid;
-    assign s_axis_tready = m_axis_tready;
+    logic frame_done_irq_q;
+
+    assign m_axis_tdata     = s_axis_tdata;
+    assign m_axis_tkeep     = {AXIS_TKEEP_WIDTH{1'b1}};
+    assign m_axis_tuser     = s_axis_tuser;
+    assign m_axis_tlast     = s_axis_tlast;
+    assign m_axis_tvalid    = s_axis_tvalid;
+    assign s_axis_tready    = m_axis_tready;
+    assign frame_done_irq_o = frame_done_irq_q;
 
     // =========================================================================
     // Register-block hwif
@@ -375,6 +383,20 @@ module isp_wrapper #(
     end
 
     // =========================================================================
+    // FRAME_DONE_IRQ latch
+    //   Set on the FLUSH->IDLE transition (measurement complete).
+    //   Cleared by CTRL.IRQ_CLEAR or CTRL.RESET.
+    // =========================================================================
+    wire irq_clear     = hwif_out.CTRL.IRQ_CLEAR.value;
+    wire measurement_done = (state == ST_FLUSH) && (next_state == ST_IDLE);
+
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                    frame_done_irq_q <= 1'b0;
+        else if (rst_all | irq_clear)    frame_done_irq_q <= 1'b0;
+        else if (measurement_done)       frame_done_irq_q <= 1'b1;
+    end
+
+    // =========================================================================
     // Drive the register block
     // =========================================================================
     always_comb begin
@@ -382,6 +404,7 @@ module isp_wrapper #(
         hwif_in.STATUS.READY.next           = (state == ST_IDLE);
         hwif_in.STATUS.HIST_DATA_VALID.next = data_valid_q;
         hwif_in.STATUS.HIST_FIFO_ERR.next   = hist_fifo_err_sticky;
+        hwif_in.STATUS.FRAME_DONE_IRQ.next  = frame_done_irq_q;
 
         // ---- Cycle + frame counters and snapshots ----
         hwif_in.CYCLE_CNT_LO.CYCLE_CNT_LO.next   = cycle_cnt_lo_q;

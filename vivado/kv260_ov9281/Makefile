@@ -34,4 +34,7 @@ $(BIT_BIN): $(BIT)
 	cd $(PROJ_DIR) && bootgen -arch zynqmp -image $(notdir $(BIF)) -process_bitstream bin 
 	@echo "Generated $(BIT_BIN)"
 
-.PHONY: all clean proj bitstream bit-bin
+gui: $(PROJ_DIR)
+	vivado $(PROJ_DIR)/$(PROJ_DIR).xpr &
+
+.PHONY: all clean proj bitstream bit-bin gui

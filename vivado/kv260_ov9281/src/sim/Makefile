@@ -16,9 +16,15 @@ SIM_DIR  := $(abspath .)
 # Per-testbench source lists
 # ---------------------------------------------------------------------------
 SRCS_tb_frame_rate := \
-	$(HDL_DIR)/isp/isp_top.sv \
-	$(HDL_DIR)/isp/isp_wrapper.v \
+	$(HDL_DIR)/isp/rdl_out/rtl/isp_regs_pkg.sv \
+	$(HDL_DIR)/isp/rdl_out/rtl/isp_regs.sv \
+	$(HDL_DIR)/stream_fifo.sv \
+	$(HDL_DIR)/isp/isp_histogram.sv \
+	$(HDL_DIR)/isp/isp_math_top.sv \
+	$(HDL_DIR)/isp/isp_math_wrapper.v \
 	$(SIM_DIR)/tb_frame_rate.sv
+
+INCDIRS_tb_frame_rate := $(HDL_DIR)/isp
 
 SRCS_tb_isp_math := \
 	$(HDL_DIR)/isp/rdl_out/rtl/isp_regs_pkg.sv \

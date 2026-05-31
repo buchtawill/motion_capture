@@ -57,7 +57,12 @@ module isp_math_wrapper (
     output wire [0:0]   m_axis_tuser,
     output wire         m_axis_tlast,
     output wire         m_axis_tvalid,
-    input  wire         m_axis_tready
+    input  wire         m_axis_tready,
+
+    // -------------------------------------------------------------------------
+    // Interrupt
+    // -------------------------------------------------------------------------
+    output wire         frame_done_irq_o
 );
 
     isp_wrapper #(
@@ -98,12 +103,14 @@ module isp_math_wrapper (
         .s_axis_tvalid    (s_axis_tvalid),
         .s_axis_tready    (s_axis_tready),
 
-        .m_axis_tdata     (m_axis_tdata),
-        .m_axis_tkeep     (m_axis_tkeep),
-        .m_axis_tuser     (m_axis_tuser),
-        .m_axis_tlast     (m_axis_tlast),
-        .m_axis_tvalid    (m_axis_tvalid),
-        .m_axis_tready    (m_axis_tready)
+        .m_axis_tdata      (m_axis_tdata),
+        .m_axis_tkeep      (m_axis_tkeep),
+        .m_axis_tuser      (m_axis_tuser),
+        .m_axis_tlast      (m_axis_tlast),
+        .m_axis_tvalid     (m_axis_tvalid),
+        .m_axis_tready     (m_axis_tready),
+
+        .frame_done_irq_o  (frame_done_irq_o)
     );
 
 endmodule

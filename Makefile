@@ -1,25 +1,37 @@
-# Top-level Makefile for motion_capture project
+# Top-level Makefile for motion_capture project (KV260 / OV9281)
 
-PROJ ?= zybo_ov9281
+VIVADO_DIR := vivado/kv260_ov9281
+VITIS_DIR  := vitis/kv260_ov9281
+LINUX_DIR  := linux/kv260_ov9281_plnx
 
 all:
-	@echo "Makefile for vivado and vitis build"
-	@echo "Projects are (zybo_ov9281, zybo_ov5640)"
-	@echo "    vitis_build   PROJ=<project>    Create vivado project, build, export, create and build vitis"
-	@echo "    vivado_build  PROJ=<project>    Create vivado project, build, export bitsream"
+	@echo "Available targets:"
+	@echo "  vivado     — clean + bitstream + bit-bin"
+	@echo "  vitis      — clean + build_all"
+	@echo "  linux      — clean + build + package + deploy"
+	@echo "  hw         — vivado + vitis"
+	@echo "  full       — vivado + vitis + linux"
 
-# Identify the directory target
-# Only run if directory does not exist
-vivado_build:
-	$(MAKE) -C vivado/$(PROJ) clean
-	$(MAKE) -C vivado/$(PROJ) build
+vivado:
+	$(MAKE) -C $(VIVADO_DIR) clean
+	$(MAKE) -C $(VIVADO_DIR) bitstream
+	$(MAKE) -C $(VIVADO_DIR) bit-bin
 
-vitis_build: vivado/$(PROJ)
-	$(MAKE) -C vivado/$(PROJ) build
-	$(MAKE) -C vitis/$(PROJ) build_vitis
+vitis:
+	$(MAKE) -C $(VITIS_DIR) clean
+	$(MAKE) -C $(VITIS_DIR) build_all
+
+linux:
+	$(MAKE) -C $(LINUX_DIR) clean
+	$(MAKE) -C $(LINUX_DIR) all
+
+hw: vivado vitis
+
+full: vivado vitis linux
 
 clean:
-	$(MAKE) -C vivado clean
-	$(MAKE) -C vitis clean
+	$(MAKE) -C $(VIVADO_DIR) clean
+	$(MAKE) -C $(VITIS_DIR) clean
+	$(MAKE) -C $(LINUX_DIR) clean
 
-.PHONY: all vitis_build clean
+.PHONY: all vivado vitis linux hw full clean

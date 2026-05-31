@@ -40,6 +40,7 @@
 `define ISP_CTRL_HIST_ADDR_AUTOINC_B 3
 `define ISP_CTRL_FRAME_CNT_RESET_B   4
 `define ISP_CTRL_CYCLE_CNT_RESET_B   5
+`define ISP_CTRL_IRQ_CLEAR_B         6
 
 // One-hot masks for convenience
 `define ISP_CTRL_RESET             (32'h1 << `ISP_CTRL_RESET_B)
@@ -48,6 +49,7 @@
 `define ISP_CTRL_HIST_ADDR_AUTOINC (32'h1 << `ISP_CTRL_HIST_ADDR_AUTOINC_B)
 `define ISP_CTRL_FRAME_CNT_RESET   (32'h1 << `ISP_CTRL_FRAME_CNT_RESET_B)
 `define ISP_CTRL_CYCLE_CNT_RESET   (32'h1 << `ISP_CTRL_CYCLE_CNT_RESET_B)
+`define ISP_CTRL_IRQ_CLEAR         (32'h1 << `ISP_CTRL_IRQ_CLEAR_B)
 
 // CTRL reset value (only HIST_ADDR_AUTOINC is sticky R/W with default 1)
 `define ISP_CTRL_RESET_VALUE       `ISP_CTRL_HIST_ADDR_AUTOINC
@@ -65,6 +67,9 @@
 `define ISP_STATUS_READY             (32'h1 << `ISP_STATUS_READY_B)
 `define ISP_STATUS_HIST_DATA_VALID   (32'h1 << `ISP_STATUS_HIST_DATA_VALID_B)
 `define ISP_STATUS_HIST_FIFO_ERR     (32'h1 << `ISP_STATUS_HIST_FIFO_ERR_B)
+
+`define ISP_STATUS_FRAME_DONE_IRQ_B  3
+`define ISP_STATUS_FRAME_DONE_IRQ    (32'h1 << `ISP_STATUS_FRAME_DONE_IRQ_B)
 
 // -----------------------------------------------------------------------------
 // Field widths / reset defaults
