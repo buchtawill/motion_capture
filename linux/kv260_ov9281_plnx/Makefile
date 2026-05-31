@@ -6,7 +6,7 @@ FSBL       ?= zynqmp_fsbl.elf
 IMAGES_DIR := images/linux
 
 ROOT_DIR   := $(NFS_DIR)/home/root
-DTBO       := build/tmp/deploy/images/xilinx-k26-kv/devicetree/camera-overlay.dtbo
+DTBO       := build/tmp/deploy/images/xilinx-k26-kv/devicetree/mocap-pipeline-overlay.dtbo
 BITBIN     := ../../vivado/kv260_ov9281/kv260_ov9281_proj/kv260_ov9281_proj.bit.bin
 
 .PHONY: all config build package deploy deploy-rootfs deploy-boot deploy-overlay clean

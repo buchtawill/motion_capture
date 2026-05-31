@@ -19,6 +19,10 @@ config mocap-sanity
 	 bool "mocap-sanity"
 	 help
 	
+config mocap-server  
+	 bool "mocap-server"
+	 help
+	
 config packagegroup-petalinux-kria  
 	 bool "packagegroup-petalinux-kria"
 	 help

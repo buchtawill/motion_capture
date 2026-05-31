@@ -8,14 +8,14 @@
 
 /*
  * The OV9281 / MIPI CSI-2 / VDMA capture pipeline lives in a SEPARATE overlay:
- *   project-spec/meta-user/recipes-bsp/device-tree/files/camera-overlay.dts
+ *   project-spec/meta-user/recipes-bsp/device-tree/files/mocap-pipeline-overlay.dts
  *
  * It must NOT live here. This file is #included into system-top.dts (the BASE
  * tree), which does not include pl.dtsi — so PL labels like &axi_iic_0 and the
  * &mipi_csi_in.../&mipi_csirx_out... endpoints are out of scope here and would
- * fail with "Label or path ... not found". camera-overlay.dts /include/s
+ * fail with "Label or path ... not found". mocap-pipeline-overlay.dts /include/s
  * pl.dtsi itself, so those labels resolve there at compile time.
  *
  * Load the pipeline at runtime with the overlay (not pl.dtbo):
- *   fpgautil -o camera-overlay.dtbo -b <bitstream>.bit.bin
+ *   fpgautil -o mocap-pipeline-overlay.dtbo -b <bitstream>.bit.bin
  */

@@ -4086,6 +4086,7 @@ CONFIG_camera-fpga-files=y
 CONFIG_hello=y
 CONFIG_mocap-perf=y
 CONFIG_mocap-sanity=y
+CONFIG_mocap-server=y
 CONFIG_packagegroup-petalinux-kria=y
 # CONFIG_peekpoke is not set
 CONFIG_rootfs-bashrc=y

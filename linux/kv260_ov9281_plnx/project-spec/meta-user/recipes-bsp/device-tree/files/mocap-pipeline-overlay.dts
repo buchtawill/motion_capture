@@ -2,8 +2,8 @@
 /plugin/;
 
 /*
- * camera-overlay.dts — OV9281 MIPI capture pipeline as a single self-contained
- * device-tree overlay.
+ * mocap-pipeline-overlay.dts — OV9281 MIPI capture pipeline as a single
+ * self-contained device-tree overlay.
  *
  *   OV9281 --I2C(TCA9546A ch2)--> [config]
  *   OV9281 --MIPI CSI-2--> mipi_csi2_rx_subsystem --AXIS--> AXI VDMA S2MM --> DDR

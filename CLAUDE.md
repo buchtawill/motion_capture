@@ -163,8 +163,8 @@ The ISP wrapper is **passive** — it snoops the AXI-Stream and exposes histogra
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/` | All user customizations — commit this. |
 | `linux/kv260_ov9281_plnx/components/plnx_workspace/device-tree/device-tree/pl.dtsi` | **Auto-generated from .xsa — never edit.** Regenerated on `petalinux-config --get-hw-description`. |
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi` | **Base-tree** overrides only (`chosen`/bootargs). It is `#include`d into `system-top.dts`, which does **not** include `pl.dtsi`, so it **cannot** reference PL labels (`&axi_iic_0`, `&mipi_csi_in...`, etc.) — doing so fails with *"Label or path … not found"*. Camera/CSI/VDMA wiring lives in the overlay below, **not** here. |
-| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/camera-overlay.dts` | **The capture pipeline overlay** (OV9281 + I2C mux + CSI→VDMA endpoint rewiring + dummy `sensor_xclk`). Top of file `/include/ "pl.dtsi"` so every PL label resolves at *compile* time → one self-contained `.dtbo`. Compiles to `camera-overlay.dtbo`. |
-| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/device-tree.bbappend` | Registers the overlay via `EXTRA_DT_FILES:append = " camera-overlay.dts"` (**not** `EXTRA_OVERLAYS` — that would also `#include` it into the non-plugin base tree). |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/files/mocap-pipeline-overlay.dts` | **The capture pipeline overlay** (OV9281 + I2C mux + CSI→VDMA endpoint rewiring + dummy `sensor_xclk`). Top of file `/include/ "pl.dtsi"` so every PL label resolves at *compile* time → one self-contained `.dtbo`. Compiles to `mocap-pipeline-overlay.dtbo`. |
+| `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/device-tree/device-tree.bbappend` | Registers the overlay via `EXTRA_DT_FILES:append = " mocap-pipeline-overlay.dts"` (**not** `EXTRA_OVERLAYS` — that would also `#include` it into the non-plugin base tree). |
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/meta-xilinx-tools/recipes-bsp/uboot-device-tree/files/system-user.dtsi` | U-boot device-tree overrides (GEM3 ethernet enable, DP83867 PHY). |
 | `linux/kv260_ov9281_plnx/project-spec/meta-user/recipes-bsp/u-boot/files/platform-top.h` | U-boot env compile-ins. Uses `CFG_EXTRA_ENV_SETTINGS` (renamed from `CONFIG_EXTRA_ENV_SETTINGS` in u-boot 2022.07+). |
 | `linux/nfs-mount-point/` | NFS-exported rootfs. Owned by root after `sudo tar xzf images/linux/rootfs.tar.gz`. NFS server configured with `no_root_squash` in `/etc/exports`. |
@@ -204,17 +204,17 @@ Passwordless sudo for the deploy targets is configured in `/etc/sudoers.d/petali
 The capture pipeline is a **runtime overlay**, not a base-tree edit. Why and how:
 
 - **`pl.dtsi` is an overlay** (`/plugin/;` at top) compiled standalone into `pl.dtbo`. The base tree (`system-top.dts` → `system.dtsi` → `system-user.dtsi`) **does not include `pl.dtsi`**, so PL labels only exist inside the overlay's compilation unit. This is why camera wiring **must not** go in `system-user.dtsi`.
-- **`camera-overlay.dts` is the real deliverable.** It `/include/ "pl.dtsi"` at the top (resolved via the `plnx_workspace/device-tree/device-tree` dir already on dtc's `-i` path), so all PL labels (`axi_iic_0`, `axi_vdma_0`, the `mipi_csi*` endpoints) bind at compile time. New root nodes (`sensor_xclk`, `vcap_csi`) are added with the `&{/}` root-target syntax. Only the standard base nodes (`fpga_full`, `amba`, `zynqmp_clk`, `zynqmp_reset`, `gic`) remain as apply-time `__fixups__` — the same set `pl.dtbo` itself needs.
+- **`mocap-pipeline-overlay.dts` is the real deliverable.** It `/include/ "pl.dtsi"` at the top (resolved via the `plnx_workspace/device-tree/device-tree` dir already on dtc's `-i` path), so all PL labels (`axi_iic_0`, `axi_vdma_0`, the `mipi_csi*` endpoints) bind at compile time. New root nodes (`sensor_xclk`, `vcap_csi`) are added with the `&{/}` root-target syntax. Only the standard base nodes (`fpga_full`, `amba`, `zynqmp_clk`, `zynqmp_reset`, `gic`) remain as apply-time `__fixups__` — the same set `pl.dtbo` itself needs.
 - **The build flow** (`device-tree.bb` `do_compile`): any file in `DT_FILES_PATH` whose preprocessed top contains `/plugin/;` is compiled with `dtc -@` (symbols/fixups) into a `.dtbo`. `EXTRA_DTFILES_BUNDLE` additionally `fdtoverlay`s each `.dtbo` onto the base to emit a bundled `system-<name>.dtb`.
-- **Load the `.dtbo`, not the bundle.** `system-camera-overlay.dtb` is a *flattened full tree* — feeding it to `fpgautil -o` fails (`create_overlay … err=-12`). Use the overlay:
+- **Load the `.dtbo`, not the bundle.** `system-mocap-pipeline-overlay.dtb` is a *flattened full tree* — feeding it to `fpgautil -o` fails (`create_overlay … err=-12`). Use the overlay:
   ```bash
-  fpgautil -o camera-overlay.dtbo -b kv260_ov9281_proj.bit.bin
+  fpgautil -o mocap-pipeline-overlay.dtbo -b kv260_ov9281_proj.bit.bin
   ```
 - **Where the `.dtbo` lands:** PetaLinux only promotes `pl.dtbo` + bundles into `images/linux/`. The real overlay is in the bitbake deploy dir:
   ```
-  build/tmp/deploy/images/xilinx-k26-kv/devicetree/camera-overlay.dtbo
+  build/tmp/deploy/images/xilinx-k26-kv/devicetree/mocap-pipeline-overlay.dtbo
   ```
-- **Decompile / inspect:** `dtc -I dtb -O dts camera-overlay.dtbo` (an overlay shows `fragment@N`/`__overlay__`/`__fixups__`; a flat dtb doesn't). Inspect the live applied tree with `dtc -I fs -O dts /proc/device-tree`.
+- **Decompile / inspect:** `dtc -I dtb -O dts mocap-pipeline-overlay.dtbo` (an overlay shows `fragment@N`/`__overlay__`/`__fixups__`; a flat dtb doesn't). Inspect the live applied tree with `dtc -I fs -O dts /proc/device-tree`.
 
 ### Camera driver
 
