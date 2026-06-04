@@ -29,6 +29,7 @@
 
 #include <mocap/argparse.hpp>
 #include <mocap/auto_exposure.hpp>
+#include <mocap/isp_stats.hpp>
 #include <mocap/ov9281_pipeline.hpp>
 
 using namespace mocap;
@@ -263,6 +264,10 @@ int main(int argc, char *argv[]) {
         .default_value(15)
         .scan<'d', int>()
         .help("frames between control updates");
+    program.add_argument("--isp")
+        .default_value(false)
+        .implicit_value(true)
+        .help("use ISP HW histogram for auto-exposure (auto-discover UIO)");
 
     try {
         program.parse_args(argc, argv);
@@ -289,6 +294,7 @@ int main(int argc, char *argv[]) {
     const double ae_target = program.get<double>("--ae-target");
     const double ae_speed = program.get<double>("--ae-speed");
     const int ae_interval = program.get<int>("--ae-interval");
+    const bool enable_isp = program.get<bool>("--isp");
 
     if (!mode_arg.empty()) {
         const SensorMode *m = find_mode(mode_arg);
@@ -425,9 +431,22 @@ int main(int argc, char *argv[]) {
     sigaction(SIGTERM, &sa, nullptr);
     signal(SIGPIPE, SIG_IGN);
 
+    // --- ISP histogram (optional) ---------------------------------------------
+
+    std::unique_ptr<IspStats> isp;
+    if (enable_isp) {
+        isp = IspStats::discover();
+        if (isp)
+            isp->set_resolution(static_cast<uint16_t>(gw),
+                                static_cast<uint16_t>(gh));
+        else
+            std::cerr << "warning: --isp requested but no UIO device found; "
+                         "falling back to SW histogram\n";
+    }
+
     // --- auto-exposure --------------------------------------------------------
 
-    AutoExposure ae;
+    std::unique_ptr<AutoExposure> ae;
     AutoExposure *ae_ptr = nullptr;
     if (enable_ae) {
         if (sensor_path.empty())
@@ -436,8 +455,9 @@ int main(int argc, char *argv[]) {
         aecfg.target_mean = ae_target;
         aecfg.speed = ae_speed;
         aecfg.interval = ae_interval;
-        if (ae.init(sensor_path, aecfg))
-            ae_ptr = &ae;
+        ae = AutoExposure::create(sensor_path, aecfg, isp.get());
+        if (ae)
+            ae_ptr = ae.get();
     }
 
     // --- capture thread -----------------------------------------------------
@@ -525,7 +545,8 @@ int main(int argc, char *argv[]) {
     for (auto &bp : buffers)
         for (auto &pl : bp)
             munmap(pl.start, pl.length);
-    ae.close();
+    ae.reset();
+    isp.reset();
     close(vfd);
     close(sfd);
     std::cout << "Stopped.\n";

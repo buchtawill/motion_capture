@@ -16,6 +16,8 @@ SRC_URI = "file://argparse.hpp \
            file://stb_image_write.h \
            file://ov9281_pipeline.hpp \
            file://auto_exposure.hpp \
+           file://isp_regs.h \
+           file://isp_stats.hpp \
           "
 
 S = "${WORKDIR}"
@@ -26,6 +28,8 @@ do_install() {
 	install -m 0644 ${S}/stb_image_write.h ${D}${includedir}/mocap/
 	install -m 0644 ${S}/ov9281_pipeline.hpp ${D}${includedir}/mocap/
 	install -m 0644 ${S}/auto_exposure.hpp ${D}${includedir}/mocap/
+	install -m 0644 ${S}/isp_regs.h ${D}${includedir}/mocap/
+	install -m 0644 ${S}/isp_stats.hpp ${D}${includedir}/mocap/
 }
 
 # Header-only: the staged headers belong in the -dev package, and the main

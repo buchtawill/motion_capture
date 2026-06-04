@@ -18,55 +18,50 @@ The FPGA PL already has a 256-bin histogram engine (`isp_math_wrapper` at 0xA001
 
 At 340 fps with AE interval=15, we'd replace ~368 software histograms/s with ~23 register read bursts/s.
 
-## Implementation
+## Completed steps
 
-### 1. New shared header: `mocap-common/files/isp_histogram.hpp`
+### 1. Hardware interrupt
+- Added `frame_done_irq_o` output to `isp_math_wrapper.v` with `X_INTERFACE_INFO` / `X_INTERFACE_PARAMETER` attributes for Vivado to recognize it as an interrupt
+- Wired to `xlconcat_0/In3` → `pl_ps_irq0` in the block design (`system.tcl`)
+- Requires Vivado rebuild + XSA re-export + `make config` + `petalinux-build -c device-tree` for `pl.dtsi` to pick up the `interrupts` property
 
-Header-only class `IspHistogram` that wraps `/dev/mem` mmap access to the ISP registers:
+### 2. Device tree overlay
+- Added `generic-uio` compatible to `&isp_math_wrapper_0` in `mocap-pipeline-overlay.dts`
+- After overlay load, the kernel creates `/dev/uioN`; verify with `ls /dev/uio*` and `cat /sys/class/uio/uio*/name`
 
-- `init(phys_addr, hres, vres)` — mmap one page at the ISP base address via `/dev/mem`, cast to `isp_regs_t*`, set HRES/VRES registers
-- `start()` — pulse CTRL.HISTOGRAM_START
-- `is_valid()` — read STATUS.HIST_DATA_VALID
-- `read_pixel_sum()` — return PIXEL_SUM register
-- `read_histogram(uint32_t bins[256])` — set HIST_ADDR=0, read 256 × HIST_DATA with auto-increment
-- `close()` — munmap
+### 3. Shared register header: `mocap-common/files/isp_regs.h`
+- Copied from `vivado/.../rdl_out/sw/isp_regs.h` (generated PeakRDL header)
+- Standalone C, `isp_regs_t` struct + bitmask defines, no Xilinx dependencies
+- Shared source-of-truth between bare-metal (Vitis) and Linux (PetaLinux)
 
-Reuse the generated `isp_regs_t` struct and bitmask defines from `vivado/.../rdl_out/sw/isp_regs.h`. Copy it into `mocap-common/files/` as `isp_regs.h` (it's standalone, no Xilinx dependencies).
+### 4. UIO driver: `mocap-common/files/isp_stats.hpp`
+- Header-only `IspStats` class mirroring the bare-metal API
+- `init(uio_path)` — opens `/dev/uioN`, mmaps register region
+- `find_uio_device()` — scans `/sys/class/uio/uio*/name` for "isp_math_wrapper"
+- `wait_histogram_valid()` — uses UIO interrupt (blocking `read()` with `poll()` timeout), falls back to register polling if no interrupt
+- `capture_histogram()` — one-shot: start + wait + dump 256 bins + pixel_sum
+- `snapshot()` / `compute_fps()` — frame/cycle counter support
 
-### 2. Modify `auto_exposure.hpp`
+### 5. Recipe updated: `mocap-common.bb`
+- Added `isp_regs.h` and `isp_stats.hpp` to SRC_URI and do_install
 
-Add an optional `IspHistogram*` parameter. When non-null, `update()` skips the software `compute_stats()` entirely and instead:
+### 6. Integrate with `auto_exposure.hpp`
+- Refactored both `IspStats` and `AutoExposure` to RAII (factory methods returning `unique_ptr`, destructor cleanup, no `init()`/`close()`)
+- `AutoExposure::create(sensor_path, cfg, isp*)` takes optional non-owning `IspStats*`
+- `update()` checks `is_hist_data_valid()`: reads PIXEL_SUM + 256-bin histogram from HW, computes mean + 2nd percentile, kicks `start_histogram()` for next frame
+- When `IspStats*` is null, falls back to the SW subsampled histogram path
+- `create()` kicks the first `start_histogram()` so the capture loop finds valid data
 
-1. Read `is_valid()` — if the previous measurement completed, read PIXEL_SUM (and optionally 256 bins for percentile)
-2. Kick `start()` for the next measurement
-3. Feed the hardware-derived mean and percentile into the existing exposure/gain/black-level control math (unchanged)
-
-When the `IspHistogram*` is null, fall back to the current software path. This keeps the header usable by apps that don't have ISP access.
-
-### 3. Integrate in `mocap-server.cpp`
-
-- Add `--isp-addr` CLI flag (default `0xA0011000`, `0` to disable)
-- After pipeline setup, if isp-addr != 0: create `IspHistogram`, call `init()`, pass pointer to `AutoExposure`
-- The capture loop is unchanged — `ae->update()` now uses HW data internally
-
-### 4. Update `mocap-common.bb`
-
-Add `isp_regs.h` and `isp_histogram.hpp` to SRC_URI and do_install.
-
-## Files to modify
-
-- **New:** `recipes-libs/mocap-common/files/isp_regs.h` (copy from `vivado/.../rdl_out/sw/isp_regs.h`)
-- **New:** `recipes-libs/mocap-common/files/isp_histogram.hpp` (mmap wrapper)
-- **Edit:** `recipes-libs/mocap-common/files/auto_exposure.hpp` (add HW histogram path)
-- **Edit:** `recipes-libs/mocap-common/mocap-common.bb` (add new files)
-- **Edit:** `recipes-apps/mocap-server/files/mocap-server.cpp` (add `--isp-addr`, init HW histogram)
+### 7. Integrate in `mocap-server.cpp`
+- Added `--isp` flag (auto-discovers UIO device via `IspStats::discover()`)
+- After pipeline setup: creates `unique_ptr<IspStats>`, sets resolution, passes `isp.get()` to `AutoExposure::create()`
+- Capture loop unchanged — `ae->update()` transparently uses HW or SW path
 
 ## Verification
 
-1. Run `mocap-server --ae --isp-addr 0xA0011000` on the KV260 — AE log lines should show mean/dark values derived from hardware (confirm PIXEL_SUM / (W×H) matches expected brightness)
-2. Run without `--isp-addr` (or `--isp-addr 0`) — should fall back to software histogram identically to current behavior
-3. At high fps (`--mode 640x400 --fps max --ae`), compare CPU idle% with and without HW histogram to confirm reduced CPU load
-
-## Prerequisite
-
-Validate the software-only auto-exposure loop first (current `auto_exposure.hpp`). Once confirmed working on-target, implement the HW histogram integration described above.
+1. After Vivado rebuild + XSA export: confirm `pl.dtsi` has `interrupts` on `isp_math_wrapper_0`
+2. After PetaLinux build + overlay load: `ls /dev/uio*`, `cat /sys/class/uio/uio*/name`
+3. Minimal test: open UIO, read HRES/VRES (should be 1280/800), `capture_histogram()`, print PIXEL_SUM
+4. Run `mocap-server --ae --isp` — AE log lines show HW-derived mean
+5. Compare PIXEL_SUM / (W×H) with software mean — should match
+6. At high fps (`--mode 640x400 --fps max --ae`), compare CPU idle% with and without `--isp`

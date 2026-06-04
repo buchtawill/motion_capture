@@ -1,18 +1,11 @@
 // mocap/auto_exposure.hpp: closed-loop brightness normalisation for V4L2
 // sensors that expose exposure, gain, and (optionally) black-level controls.
 //
-// Header-only; consumers `#include <mocap/auto_exposure.hpp>` and call
-// init() once with the sensor subdev path, then update() every frame.
-// Internally it skips work except every `interval` frames.
+// RAII — acquire via AutoExposure::create(), release in destructor.
 //
-// Control priority: exposure (best SNR) → analog gain → black level.
-// Exposure and gain use multiplicative correction; black level uses additive
-// correction against the 2nd-percentile dark value.
-//
-// Black level is discovered at runtime by enumerating the sensor's controls
-// and matching the name substring "black".  If the driver doesn't expose one,
-// it's silently skipped (the mainline ov9282 doesn't; patch the driver to
-// add a V4L2 control for the OV9281 BLC registers if you need it).
+// When an IspStats* is provided at construction, update() reads the HW
+// histogram (zero CPU cost) instead of computing a subsampled SW histogram
+// from pixel data.  When null, falls back to the SW path.
 
 #pragma once
 
@@ -22,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 
 #include <fcntl.h>
@@ -30,6 +24,8 @@
 
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
+
+#include <mocap/isp_stats.hpp>
 
 namespace mocap {
 
@@ -43,47 +39,164 @@ struct AEConfig {
 
 class AutoExposure {
 public:
-    bool init(const std::string &sensor_subdev_path, const AEConfig &cfg) {
-        cfg_ = cfg;
-        fd_ = open(sensor_subdev_path.c_str(), O_RDWR);
-        if (fd_ == -1) {
+    static std::unique_ptr<AutoExposure> create(
+        const std::string &sensor_subdev_path, const AEConfig &cfg,
+        IspStats *isp = nullptr) {
+
+        int fd = ::open(sensor_subdev_path.c_str(), O_RDWR);
+        if (fd == -1) {
             std::cerr << "AE: cannot open " << sensor_subdev_path << ": "
                       << strerror(errno) << "\n";
-            return false;
+            return nullptr;
         }
 
-        query_ctrl(V4L2_CID_EXPOSURE, exposure_, "exposure");
-        query_ctrl(V4L2_CID_ANALOGUE_GAIN, gain_, "analog gain");
-        find_ctrl_by_substr("black", black_level_);
+        std::unique_ptr<AutoExposure> ae(new AutoExposure(fd, cfg, isp));
 
-        if (!exposure_.available && !gain_.available) {
+        ae->query_ctrl(V4L2_CID_EXPOSURE, ae->exposure_, "exposure");
+        ae->query_ctrl(V4L2_CID_ANALOGUE_GAIN, ae->gain_, "analog gain");
+        ae->find_ctrl_by_substr("black", ae->black_level_);
+
+        if (!ae->exposure_.available && !ae->gain_.available) {
             std::cerr << "AE: no usable controls found\n";
-            ::close(fd_);
-            fd_ = -1;
-            return false;
+            return nullptr;
         }
 
         std::cout << "Auto-exposure enabled (target mean="
-                  << cfg_.target_mean << ", speed=" << cfg_.speed
-                  << ", interval=" << cfg_.interval << ")\n";
-        print_ctrl("  exposure", exposure_);
-        print_ctrl("  analog gain", gain_);
-        print_ctrl("  black level", black_level_);
-        return true;
+                  << cfg.target_mean << ", speed=" << cfg.speed
+                  << ", interval=" << cfg.interval
+                  << ", hw_hist=" << (isp ? "yes" : "no") << ")\n";
+        print_ctrl("  exposure", ae->exposure_);
+        print_ctrl("  analog gain", ae->gain_);
+        print_ctrl("  black level", ae->black_level_);
+
+        if (isp)
+            isp->start_histogram();
+
+        return ae;
     }
+
+    ~AutoExposure() {
+        if (fd_ != -1)
+            ::close(fd_);
+    }
+
+    AutoExposure(const AutoExposure &) = delete;
+    AutoExposure &operator=(const AutoExposure &) = delete;
 
     bool update(const uint8_t *data, unsigned width, unsigned height,
                 unsigned stride) {
-        if (fd_ == -1)
-            return false;
         if (++frame_count_ < cfg_.interval)
             return false;
         frame_count_ = 0;
 
-        FrameStats st = compute_stats(data, width, height, stride);
+        FrameStats st;
+        if (isp_) {
+            if (!isp_->is_hist_data_valid()) {
+                isp_->start_histogram();
+                return false;
+            }
+            st = read_hw_stats(width, height);
+            isp_->start_histogram();
+        } else {
+            st = compute_stats(data, width, height, stride);
+        }
+        return apply(st);
+    }
+
+private:
+    struct CtrlInfo {
+        uint32_t cid = 0;
+        int min = 0, max = 0, cur = 0;
+        bool available = false;
+    };
+
+    struct FrameStats {
+        double  mean;
+        uint8_t dark_pct;
+    };
+
+    AEConfig cfg_;
+    int fd_;
+    int frame_count_ = 0;
+    IspStats *isp_;
+
+    CtrlInfo exposure_;
+    CtrlInfo gain_;
+    CtrlInfo black_level_;
+
+    AutoExposure(int fd, const AEConfig &cfg, IspStats *isp)
+        : cfg_(cfg), fd_(fd), isp_(isp) {}
+
+    // --- HW histogram path --------------------------------------------------
+
+    FrameStats read_hw_stats(unsigned w, unsigned h) {
+        uint32_t npix = static_cast<uint32_t>(w) * h;
+        double mean =
+            npix ? static_cast<double>(isp_->read_pixel_sum()) / npix : 0.0;
+
+        isp_hist_t hist;
+        isp_->dump_histogram(hist);
+
+        uint64_t total = 0;
+        for (int i = 0; i < 256; i++)
+            total += hist[i];
+
+        uint64_t target = total * 2 / 100;
+        if (target == 0)
+            target = 1;
+        uint64_t cum = 0;
+        uint8_t pct = 0;
+        for (int i = 0; i < 256; i++) {
+            cum += hist[i];
+            if (cum >= target) {
+                pct = static_cast<uint8_t>(i);
+                break;
+            }
+        }
+        return {mean, pct};
+    }
+
+    // --- SW histogram path --------------------------------------------------
+
+    static FrameStats compute_stats(const uint8_t *data, unsigned w,
+                                    unsigned h, unsigned stride) {
+        constexpr unsigned kSkip = 4;
+        uint32_t hist[256] = {};
+        uint64_t sum = 0;
+        unsigned count = 0;
+
+        for (unsigned y = 0; y < h; y += kSkip) {
+            const uint8_t *row = data + y * stride;
+            for (unsigned x = 0; x < w; x += kSkip) {
+                uint8_t v = row[x];
+                hist[v]++;
+                sum += v;
+                ++count;
+            }
+        }
+
+        double mean = count ? static_cast<double>(sum) / count : 0.0;
+
+        unsigned thr = count * 2 / 100;
+        if (thr == 0)
+            thr = 1;
+        unsigned cum = 0;
+        uint8_t pct = 0;
+        for (unsigned i = 0; i < 256; ++i) {
+            cum += hist[i];
+            if (cum >= thr) {
+                pct = static_cast<uint8_t>(i);
+                break;
+            }
+        }
+        return {mean, pct};
+    }
+
+    // --- Control math (shared by both paths) --------------------------------
+
+    bool apply(const FrameStats &st) {
         bool changed = false;
 
-        // --- exposure + gain (multiplicative) ---
         double error = cfg_.target_mean - st.mean;
         if (std::abs(error) >= cfg_.deadband) {
             double mean_safe = st.mean < 1.0 ? 1.0 : st.mean;
@@ -115,7 +228,6 @@ public:
             }
         }
 
-        // --- black level (additive offset) ---
         if (black_level_.available) {
             double dark_err = cfg_.target_black - st.dark_pct;
             if (std::abs(dark_err) > 2.0) {
@@ -146,32 +258,7 @@ public:
         return changed;
     }
 
-    void close() {
-        if (fd_ != -1) {
-            ::close(fd_);
-            fd_ = -1;
-        }
-    }
-
-private:
-    struct CtrlInfo {
-        uint32_t cid = 0;
-        int min = 0, max = 0, cur = 0;
-        bool available = false;
-    };
-
-    struct FrameStats {
-        double  mean;
-        uint8_t dark_pct;
-    };
-
-    AEConfig cfg_;
-    int fd_          = -1;
-    int frame_count_ = 0;
-
-    CtrlInfo exposure_;
-    CtrlInfo gain_;
-    CtrlInfo black_level_;
+    // --- V4L2 helpers -------------------------------------------------------
 
     static int ae_ioctl(int fd, unsigned long req, void *arg) {
         int r;
@@ -242,42 +329,6 @@ private:
                       << " (current " << c.cur << ")\n";
         else
             std::cout << label << ": not available\n";
-    }
-
-    // Subsampled mean + 2nd-percentile from a histogram.
-    static FrameStats compute_stats(const uint8_t *data, unsigned w,
-                                    unsigned h, unsigned stride) {
-        constexpr unsigned kSkip = 4;
-        uint32_t hist[256] = {};
-        uint64_t sum = 0;
-        unsigned count = 0;
-
-        for (unsigned y = 0; y < h; y += kSkip) {
-            const uint8_t *row = data + y * stride;
-            for (unsigned x = 0; x < w; x += kSkip) {
-                uint8_t v = row[x];
-                hist[v]++;
-                sum += v;
-                ++count;
-            }
-        }
-
-        double mean = count ? static_cast<double>(sum) / count : 0.0;
-
-        unsigned target = count * 2 / 100;
-        if (target == 0)
-            target = 1;
-        unsigned cum = 0;
-        uint8_t pct = 0;
-        for (unsigned i = 0; i < 256; ++i) {
-            cum += hist[i];
-            if (cum >= target) {
-                pct = static_cast<uint8_t>(i);
-                break;
-            }
-        }
-
-        return {mean, pct};
     }
 };
 
