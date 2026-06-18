@@ -401,8 +401,11 @@ module blob_detect_grid_top #(
             // frame_cnt not reset by CTRL.RESET in this design (keep running)
             blob_count_reg  <= 8'h0;
         end else begin
-            // frame_done asserted for 1 cycle when entering ST_DONE
-            frame_done_reg <= (state == ST_SCAN && next_state == ST_DONE);
+            // frame_done: sticky, set on entering ST_DONE, cleared on next START
+            if (state == ST_SCAN && next_state == ST_DONE)
+                frame_done_reg <= 1'b1;
+            else if (state == ST_IDLE && next_state == ST_CLEAR)
+                frame_done_reg <= 1'b0;
 
             // overflow: sticky from accumulator or scanner
             if (acc_overflow || scan_overflow)
@@ -428,7 +431,7 @@ module blob_detect_grid_top #(
             frame_done_irq_q <= 1'b0;
         else if (rst_all || irq_clear)
             frame_done_irq_q <= 1'b0;
-        else if (frame_done_reg)
+        else if (state == ST_SCAN && next_state == ST_DONE)
             frame_done_irq_q <= 1'b1;
     end
 

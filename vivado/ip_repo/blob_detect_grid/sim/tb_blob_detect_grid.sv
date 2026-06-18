@@ -337,7 +337,7 @@ module tb_blob_detect_grid;
         $display("\n[%0t ns] --- Step 5: Write CTRL (START, THRESHOLD=128) ---", $time);
         // CTRL: [15:8]=threshold, [3]=autoinc, [2]=irq_clear, [1]=start, [0]=reset
         // autoinc defaults to 1; set threshold=128 and start=1
-        axi_write(ADDR_CTRL, (32'd128 << 8) | 32'h0A); // threshold=128, autoinc=1, start=1
+        axi_write(ADDR_CTRL, (32'd128 << 4) | 32'h0A); // threshold=128, autoinc=1, start=1
 
         // ----------------------------------------------------------------
         // Step 6: Wait for STATUS.READY to go low (FSM left IDLE)
@@ -411,14 +411,14 @@ module tb_blob_detect_grid;
         check("frame_done_irq_o", frame_done_irq_o, 1'b1);
 
         // Clear IRQ
-        axi_write(ADDR_CTRL, (32'd128 << 8) | 32'h0C); // threshold=128, autoinc=1, irq_clear=1
+        axi_write(ADDR_CTRL, (32'd128 << 4) | 32'h0C); // threshold=128, autoinc=1, irq_clear=1
 
         // ----------------------------------------------------------------
         // Step 9: Read STATUS, extract BLOB_COUNT
         // ----------------------------------------------------------------
         $display("\n[%0t ns] --- Step 9: Read STATUS ---", $time);
         axi_read(ADDR_STATUS, status_val);
-        blob_count = int'(status_val[15:8]);
+        blob_count = int'(status_val[11:4]);
         $display("[%0t ns] [INFO] STATUS = 0x%08x  BLOB_COUNT = %0d",
                  $time, status_val, blob_count);
         check("STATUS.FRAME_DONE", status_val[1], 1'b1);
@@ -430,7 +430,7 @@ module tb_blob_detect_grid;
                  $time, blob_count);
 
         // Disable auto-increment: threshold=128, autoinc=0, no pulses
-        axi_write(ADDR_CTRL, (32'd128 << 8)); // bit[3]=0 => autoinc off
+        axi_write(ADDR_CTRL, (32'd128 << 4)); // bit[3]=0 => autoinc off
 
         for (int b = 0; b < blob_count; b++) begin
             axi_write(ADDR_BLOB_ADDR, 32'(b));

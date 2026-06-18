@@ -219,7 +219,7 @@ module cell_accumulator #(
             s1_px_y  <= y_cnt;
             if (clear)
                 overflow <= 1'b0;
-            else if (cell_fg && (cell_idx >= ADDR_W'(MAX_CELLS)))
+            else if (cell_fg && ({1'b0, cell_idx} >= (ADDR_W+1)'(MAX_CELLS)))
                 overflow <= 1'b1;
         end
     end
