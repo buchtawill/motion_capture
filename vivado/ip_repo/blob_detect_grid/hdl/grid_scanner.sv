@@ -120,9 +120,13 @@ module grid_scanner #(
     // =========================================================================
     always_comb begin
         case (state)
-            ST_LINEAR_RD: cell_addr = linear_idx;
-            ST_DFS_POP:   cell_addr = stack[sp - 1'b1];  // peek top of stack
-            default:      cell_addr = '0;
+            ST_LINEAR_RD,
+            ST_LINEAR_WAIT,
+            ST_LINEAR_CHK:  cell_addr = linear_idx;
+            ST_DFS_POP:     cell_addr = stack[sp - 1'b1];  // peek top of stack
+            ST_DFS_WAIT,
+            ST_DFS_CHK:     cell_addr = dfs_cell;
+            default:        cell_addr = '0;
         endcase
     end
 
