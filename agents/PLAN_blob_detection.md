@@ -96,4 +96,25 @@ Two architectures chosen above. Research agent validates feasibility.
 - [ ] Complexity comparison
 
 ## Progress Log
-<!-- Agents update this section as work completes -->
+
+### Grid-Based (Architecture B) — COMPLETE
+- [x] Directory scaffold + git branch `feature/blob-detection`
+- [x] RDL register spec (`blob_detect_grid_regs.rdl`) + generated RTL/header/docs
+- [x] Python functional model (gen_stimulus, model, compare) — all 8 test cases pass
+- [x] RTL implementation (cell_accumulator, grid_scanner, blob_emitter, top, wrapper)
+- [x] Opus sanity review — found divider and off-by-one blob limit → fixed
+- [x] Testbench + xsim verification — 7 blobs match model exactly, AXIS passthrough verified
+- [x] All pushed to `feature/blob-detection` branch
+
+**Bugs found and fixed during verification:**
+1. cell_accumulator overflow check wrapped to 0 (ADDR_W'(MAX_CELLS) = 0 for power-of-2)
+2. FRAME_DONE was 1-cycle pulse, not sticky — SW couldn't read it
+3. Testbench CTRL register bit positions (THRESHOLD at [11:4], not [15:8])
+4. grid_scanner BRAM read address dropped during WAIT/CHK states — root cause of blob_count=0
+5. grid_scanner used hardware dividers (% and /) — replaced with stack-carried col/row
+6. Off-by-one max blob count (MAX_BLOBS-1 usable, not MAX_BLOBS)
+
+**Known follow-up:** Sub-module FSMs should be refactored to separate always_comb/always_ff pattern.
+
+### RLE-Based (Architecture A) — NOT STARTED
+Waiting for user review of grid-based IP before starting.
