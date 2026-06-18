@@ -94,13 +94,18 @@ module grid_scanner #(
     // Linear scan index and total cell count
     logic [ADDR_W-1:0] linear_idx;
     logic [ADDR_W-1:0] total_cells;
+    logic [10:0]       linear_col, linear_row;
 
     // DFS current cell (registered when popped)
     logic [ADDR_W-1:0] dfs_cell;
     logic [10:0]       dfs_col, dfs_row;
 
-    // Blob tracking
-    logic [BLOB_W-1:0] cur_blob_id;
+    // Stack carries (col, row) alongside flat index to avoid dividers
+    logic [10:0] stack_col [0:STACK_DEPTH-1];
+    logic [10:0] stack_row [0:STACK_DEPTH-1];
+
+    // Blob tracking (1 extra bit to detect overflow at MAX_BLOBS)
+    logic [BLOB_W:0] cur_blob_id;
 
     // Clear counter
     logic [ADDR_W-1:0] clr_addr;
@@ -108,7 +113,7 @@ module grid_scanner #(
     // Neighbor push sub-phase (0=N, 1=S, 2=E, 3=W)
     logic [1:0]        nbr_phase;
 
-    assign blob_count = cur_blob_id;
+    assign blob_count = BLOB_W'(cur_blob_id);
 
     // =========================================================================
     // Cell BRAM read address (combinational mux)
@@ -125,33 +130,44 @@ module grid_scanner #(
     // Neighbor computation (fully combinational, used in ST_DFS_NBRS)
     // =========================================================================
     logic [ADDR_W-1:0] nbr_idx;
+    logic [10:0]       nbr_col, nbr_row;
     logic              nbr_geo_valid;  // neighbor is within grid bounds
 
     always_comb begin
         nbr_idx       = '0;
+        nbr_col       = '0;
+        nbr_row       = '0;
         nbr_geo_valid = 1'b0;
         case (nbr_phase)
             2'd0: begin // North
                 if (dfs_row > 11'h0) begin
-                    nbr_idx       = ADDR_W'((dfs_row - 11'h1) * grid_cols + dfs_col);
+                    nbr_col       = dfs_col;
+                    nbr_row       = dfs_row - 11'h1;
+                    nbr_idx       = ADDR_W'(nbr_row * grid_cols + nbr_col);
                     nbr_geo_valid = 1'b1;
                 end
             end
             2'd1: begin // South
                 if (dfs_row < grid_rows - 11'h1) begin
-                    nbr_idx       = ADDR_W'((dfs_row + 11'h1) * grid_cols + dfs_col);
+                    nbr_col       = dfs_col;
+                    nbr_row       = dfs_row + 11'h1;
+                    nbr_idx       = ADDR_W'(nbr_row * grid_cols + nbr_col);
                     nbr_geo_valid = 1'b1;
                 end
             end
             2'd2: begin // East
                 if (dfs_col < grid_cols - 11'h1) begin
-                    nbr_idx       = ADDR_W'(dfs_row * grid_cols + dfs_col + 11'h1);
+                    nbr_col       = dfs_col + 11'h1;
+                    nbr_row       = dfs_row;
+                    nbr_idx       = ADDR_W'(nbr_row * grid_cols + nbr_col);
                     nbr_geo_valid = 1'b1;
                 end
             end
             2'd3: begin // West
                 if (dfs_col > 11'h0) begin
-                    nbr_idx       = ADDR_W'(dfs_row * grid_cols + dfs_col - 11'h1);
+                    nbr_col       = dfs_col - 11'h1;
+                    nbr_row       = dfs_row;
+                    nbr_idx       = ADDR_W'(nbr_row * grid_cols + nbr_col);
                     nbr_geo_valid = 1'b1;
                 end
             end
@@ -168,6 +184,8 @@ module grid_scanner #(
             done        <= 1'b0;
             overflow    <= 1'b0;
             linear_idx  <= '0;
+            linear_col  <= '0;
+            linear_row  <= '0;
             total_cells <= '0;
             cur_blob_id <= '0;
             sp          <= '0;
@@ -193,6 +211,8 @@ module grid_scanner #(
                 ST_IDLE: begin
                     if (start) begin
                         linear_idx  <= '0;
+                        linear_col  <= '0;
+                        linear_row  <= '0;
                         total_cells <= ADDR_W'(grid_cols * grid_rows);
                         cur_blob_id <= '0;
                         sp          <= '0;
@@ -231,7 +251,7 @@ module grid_scanner #(
                 ST_LINEAR_CHK: begin
                     if (!visited[linear_idx] && cell_data[79:60] != 20'h0) begin
                         // Non-empty unvisited cell: new connected component
-                        if (cur_blob_id == BLOB_W'(MAX_BLOBS - 1)) begin
+                        if (cur_blob_id >= (BLOB_W+1)'(MAX_BLOBS)) begin
                             overflow <= 1'b1;
                             state    <= ST_DONE;
                         end else begin
@@ -243,6 +263,12 @@ module grid_scanner #(
                             state <= ST_DONE;
                         end else begin
                             linear_idx <= linear_idx + 1'b1;
+                            if (linear_col + 11'h1 >= grid_cols) begin
+                                linear_col <= '0;
+                                linear_row <= linear_row + 11'h1;
+                            end else begin
+                                linear_col <= linear_col + 11'h1;
+                            end
                             state      <= ST_LINEAR_RD;
                         end
                     end
@@ -253,6 +279,8 @@ module grid_scanner #(
                 ST_DFS_PUSH: begin
                     if (!stack_full) begin
                         stack[sp]           <= linear_idx;
+                        stack_col[sp]       <= linear_col;
+                        stack_row[sp]       <= linear_row;
                         sp                  <= sp + 1'b1;
                         visited[linear_idx] <= 1'b1;
                         state               <= ST_DFS_POP;
@@ -274,23 +302,28 @@ module grid_scanner #(
                             state <= ST_DONE;
                         end else begin
                             linear_idx <= linear_idx + 1'b1;
+                            if (linear_col + 11'h1 >= grid_cols) begin
+                                linear_col <= '0;
+                                linear_row <= linear_row + 11'h1;
+                            end else begin
+                                linear_col <= linear_col + 11'h1;
+                            end
                             state      <= ST_LINEAR_RD;
                         end
                     end else begin
                         // cell_addr is driven from stack[sp-1] combinationally
                         dfs_cell <= stack[sp - 1'b1];
+                        dfs_col  <= stack_col[sp - 1'b1];
+                        dfs_row  <= stack_row[sp - 1'b1];
                         sp       <= sp - 1'b1;
                         state    <= ST_DFS_WAIT;
                     end
                 end
 
                 // -------------------------------------------------------------
-                // DFS: wait for BRAM latency; compute col/row of popped cell
+                // DFS: wait for BRAM latency (col/row already loaded from stack)
                 ST_DFS_WAIT: begin
-                    // Sequential division: acceptable (1 cycle latency)
-                    dfs_col <= 11'(dfs_cell % grid_cols);
-                    dfs_row <= 11'(dfs_cell / grid_cols);
-                    state   <= ST_DFS_CHK;
+                    state <= ST_DFS_CHK;
                 end
 
                 // -------------------------------------------------------------
@@ -333,6 +366,8 @@ module grid_scanner #(
                     if (nbr_geo_valid && !visited[nbr_idx]) begin
                         if (!stack_full) begin
                             stack[sp]        <= nbr_idx;
+                            stack_col[sp]    <= nbr_col;
+                            stack_row[sp]    <= nbr_row;
                             sp               <= sp + 1'b1;
                             visited[nbr_idx] <= 1'b1;
                         end else begin
