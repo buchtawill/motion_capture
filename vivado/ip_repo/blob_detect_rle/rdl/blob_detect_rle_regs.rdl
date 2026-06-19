@@ -1,0 +1,241 @@
+// blob_detect_rle_regs.rdl
+// RLE-based streaming CCL blob detection IP AXI4-Lite register map.
+//
+// The module detects foreground blobs in a pixel stream by:
+//   - Thresholding each pixel against CTRL.THRESHOLD
+//   - Run-length encoding foreground spans per scanline
+//   - Merging overlapping RLE runs across adjacent lines (streaming CCL)
+//   - Accumulating per-blob statistics (pixel count, centroid sums, bounding box)
+//
+// Pixel path is 8-bit. Up to MAX_BLOBS blobs are tracked per frame.
+//
+// Register summary (each register occupies 4 bytes of address space):
+//   0x00  CTRL           R/W   Control (W-pulses + BLOB_ADDR_AUTOINC + THRESHOLD)
+//   0x04  STATUS         RO    HW-driven status
+//   0x08  HRES           R/W   Horizontal resolution (16b, default 1280)
+//   0x0C  VRES           R/W   Vertical resolution   (16b, default 800)
+//   0x10  BLOB_ADDR      R/W   Blob table read index (8b), HW-writable for auto-inc
+//   0x14  BLOB_COUNT_RD  RO    Pixel count for blob at BLOB_ADDR (32b)
+//   0x18  BLOB_SX        RO    Sum of X coords for blob at BLOB_ADDR (32b)
+//   0x1C  BLOB_SY        RO    Sum of Y coords for blob at BLOB_ADDR (32b)
+//   0x20  BLOB_XMIN      RO    Bounding box min X for blob at BLOB_ADDR (16b)
+//   0x24  BLOB_XMAX      RO    Bounding box max X for blob at BLOB_ADDR (16b)
+//   0x28  BLOB_YMIN      RO    Bounding box min Y for blob at BLOB_ADDR (16b)
+//   0x2C  BLOB_YMAX      RO    Bounding box max Y for blob at BLOB_ADDR (16b)
+//   0x30  FRAME_CNT      RO    Frame counter (32b)
+//   0x34  MAX_BLOBS_CFG  RO    Reports MAX_BLOBS parameter to SW (16b)
+//
+// A SW reset (CTRL.RESET = 1) clears all blob tables, counters, and status flags;
+// it does NOT reset HRES, VRES, CTRL.THRESHOLD, or CTRL.BLOB_ADDR_AUTOINC.
+
+addrmap blob_detect_rle_regs {
+    desc = "RLE-based streaming CCL blob detection AXI4-Lite register map: per-blob pixel count,
+            centroid sums, bounding box, frame counter, and configuration.
+            8-bit pixels; up to MAX_BLOBS blobs per frame.";
+
+    // =========================================================
+    // 0x00: Control
+    //  - Bits 0, 1, 2 are write-only single-pulse (auto-clear)
+    //  - Bit 3 (BLOB_ADDR_AUTOINC) is sticky R/W, default 1
+    //  - Bits [15:8] (THRESHOLD) are sticky R/W, default 128
+    // =========================================================
+    reg ctrl_reg {
+        desc = "Blob detect control register.";
+
+        field { hw = r; sw = w; singlepulse; } RESET[1]              = 0;
+        // Bit 0: SW reset. Clears all blob table state, counters, and status
+        //        flags. Does NOT reset HRES, VRES, THRESHOLD, or BLOB_ADDR_AUTOINC.
+
+        field { hw = r; sw = w; singlepulse; } START[1]              = 0;
+        // Bit 1: Begin processing the next frame. Ignored if STATUS.READY = 0
+        //        or if HRES / VRES are zero.
+
+        field { hw = r; sw = w; singlepulse; } IRQ_CLEAR[1]          = 0;
+        // Bit 2: Clear the FRAME_DONE_IRQ latch (write 1 to deassert the
+        //        interrupt output).
+
+        field { hw = r; sw = rw; }             BLOB_ADDR_AUTOINC[1]  = 1;
+        // Bit 3: When 1, BLOB_ADDR auto-increments (wrapping at MAX_BLOBS-1)
+        //        after each blob data read (BLOB_COUNT_RD, BLOB_SX, BLOB_SY,
+        //        BLOB_XMIN, BLOB_XMAX, BLOB_YMIN, BLOB_YMAX). Defaults to 1.
+
+        field { hw = r; sw = rw; }             THRESHOLD[8]          = 8'd128;
+        // Bits [15:8]: Pixel threshold for foreground detection. Pixels with
+        //        value > THRESHOLD are treated as foreground. Preserved across
+        //        SW reset.
+    };
+
+    // =========================================================
+    // 0x04: Status (RO, HW-driven)
+    // =========================================================
+    reg status_reg {
+        desc = "Blob detect status register (RO).";
+
+        default hw = w;
+        default sw = r;
+
+        field {} READY[1]           = 0;
+        // Bit 0: 1 when the module is idle and ready to accept CTRL.START.
+        //        0 while a frame is being processed.
+
+        field {} FRAME_DONE[1]      = 0;
+        // Bit 1: Set when frame processing completes and blob table is valid.
+        //        Cleared when a new frame starts (CTRL.START asserted).
+
+        field {} OVERFLOW[1]        = 0;
+        // Bit 2: Sticky. Set when the blob table is full (more than MAX_BLOBS
+        //        blobs detected). Additional blobs are dropped. Cleared only by
+        //        RTL reset or CTRL.RESET.
+
+        field {} FRAME_DONE_IRQ[1]  = 0;
+        // Bit 3: Latched high on FRAME_DONE rising edge. Drives the interrupt
+        //        output. Cleared by CTRL.IRQ_CLEAR or CTRL.RESET.
+
+        field {} BLOB_COUNT[8]      = 0;
+        // Bits [15:8]: Number of blobs detected in the last completed frame.
+        //        Valid when FRAME_DONE = 1.
+    };
+
+    // =========================================================
+    // 0x08: Horizontal Resolution (R/W, 16b, preserved across SW reset)
+    // =========================================================
+    reg hres_reg {
+        desc = "Horizontal resolution in pixels (e.g. 1280). Must be non-zero
+                before asserting CTRL.START. Preserved across SW reset.";
+        field { hw = r; sw = rw; } HRES[16] = 16'd1280;
+    };
+
+    // =========================================================
+    // 0x0C: Vertical Resolution (R/W, 16b, preserved across SW reset)
+    // =========================================================
+    reg vres_reg {
+        desc = "Vertical resolution in lines (e.g. 800). Must be non-zero
+                before asserting CTRL.START. Preserved across SW reset.";
+        field { hw = r; sw = rw; } VRES[16] = 16'd800;
+    };
+
+    // =========================================================
+    // 0x10: Blob table read address (R/W, 8b, HW-writable for auto-increment)
+    // =========================================================
+    reg blob_addr_reg {
+        desc = "Blob table read index. Selects which blob entry is presented on
+                BLOB_COUNT_RD, BLOB_SX, BLOB_SY, BLOB_XMIN, BLOB_XMAX,
+                BLOB_YMIN, and BLOB_YMAX. When CTRL.BLOB_ADDR_AUTOINC = 1,
+                auto-increments (wrapping at MAX_BLOBS-1) on each blob data read.
+                Bits [31:8] are reserved / read 0.";
+        field { hw = rw; sw = rw; we; } BLOB_ADDR[8] = 0;
+    };
+
+    // =========================================================
+    // 0x14: Blob pixel count (RO, 32b)
+    // =========================================================
+    reg blob_count_rd_reg {
+        desc = "Pixel count for the blob selected by BLOB_ADDR. Valid when
+                STATUS.FRAME_DONE = 1. Reading this register may auto-increment
+                BLOB_ADDR when CTRL.BLOB_ADDR_AUTOINC = 1.";
+        field { hw = w; sw = r; } BLOB_COUNT_RD[32] = 0;
+    };
+
+    // =========================================================
+    // 0x18: Blob X centroid sum (RO, 32b)
+    // =========================================================
+    reg blob_sx_reg {
+        desc = "Sum of X coordinates of all foreground pixels in the blob
+                selected by BLOB_ADDR. Centroid X = BLOB_SX / BLOB_COUNT_RD.
+                Valid when STATUS.FRAME_DONE = 1. Reading may auto-increment
+                BLOB_ADDR when CTRL.BLOB_ADDR_AUTOINC = 1.";
+        field { hw = w; sw = r; } BLOB_SX[32] = 0;
+    };
+
+    // =========================================================
+    // 0x1C: Blob Y centroid sum (RO, 32b)
+    // =========================================================
+    reg blob_sy_reg {
+        desc = "Sum of Y coordinates of all foreground pixels in the blob
+                selected by BLOB_ADDR. Centroid Y = BLOB_SY / BLOB_COUNT_RD.
+                Valid when STATUS.FRAME_DONE = 1. Reading may auto-increment
+                BLOB_ADDR when CTRL.BLOB_ADDR_AUTOINC = 1.";
+        field { hw = w; sw = r; } BLOB_SY[32] = 0;
+    };
+
+    // =========================================================
+    // 0x20: Bounding box min X (RO, 16b)
+    // =========================================================
+    reg blob_xmin_reg {
+        desc = "Minimum X coordinate (leftmost pixel column) of the bounding
+                box for the blob selected by BLOB_ADDR. Valid when
+                STATUS.FRAME_DONE = 1. Reading may auto-increment BLOB_ADDR
+                when CTRL.BLOB_ADDR_AUTOINC = 1. Bits [31:16] are reserved.";
+        field { hw = w; sw = r; } BLOB_XMIN[16] = 0;
+    };
+
+    // =========================================================
+    // 0x24: Bounding box max X (RO, 16b)
+    // =========================================================
+    reg blob_xmax_reg {
+        desc = "Maximum X coordinate (rightmost pixel column) of the bounding
+                box for the blob selected by BLOB_ADDR. Valid when
+                STATUS.FRAME_DONE = 1. Reading may auto-increment BLOB_ADDR
+                when CTRL.BLOB_ADDR_AUTOINC = 1. Bits [31:16] are reserved.";
+        field { hw = w; sw = r; } BLOB_XMAX[16] = 0;
+    };
+
+    // =========================================================
+    // 0x28: Bounding box min Y (RO, 16b)
+    // =========================================================
+    reg blob_ymin_reg {
+        desc = "Minimum Y coordinate (topmost pixel row) of the bounding
+                box for the blob selected by BLOB_ADDR. Valid when
+                STATUS.FRAME_DONE = 1. Reading may auto-increment BLOB_ADDR
+                when CTRL.BLOB_ADDR_AUTOINC = 1. Bits [31:16] are reserved.";
+        field { hw = w; sw = r; } BLOB_YMIN[16] = 0;
+    };
+
+    // =========================================================
+    // 0x2C: Bounding box max Y (RO, 16b)
+    // =========================================================
+    reg blob_ymax_reg {
+        desc = "Maximum Y coordinate (bottommost pixel row) of the bounding
+                box for the blob selected by BLOB_ADDR. Valid when
+                STATUS.FRAME_DONE = 1. Reading may auto-increment BLOB_ADDR
+                when CTRL.BLOB_ADDR_AUTOINC = 1. Bits [31:16] are reserved.";
+        field { hw = w; sw = r; } BLOB_YMAX[16] = 0;
+    };
+
+    // =========================================================
+    // 0x30: Frame Counter (RO, 32b)
+    // =========================================================
+    reg frame_cnt_reg {
+        desc = "Frame counter. Increments once per completed frame (on
+                FRAME_DONE assertion). Reset by RTL reset or CTRL.RESET.";
+        field { hw = w; sw = r; } FRAME_CNT[32] = 0;
+    };
+
+    // =========================================================
+    // 0x34: MAX_BLOBS configuration readback (RO, 16b)
+    // =========================================================
+    reg max_blobs_cfg_reg {
+        desc = "Reports the MAX_BLOBS HDL parameter value to software so the
+                driver can determine the valid range of BLOB_ADDR without
+                needing a separate out-of-band channel. Bits [31:16] reserved.";
+        field { hw = w; sw = r; } MAX_BLOBS_CFG[16] = 0;
+    };
+
+    // =========================================================
+    // Address Map
+    // =========================================================
+    ctrl_reg          CTRL          @ 0x000;
+    status_reg        STATUS        @ 0x004;
+    hres_reg          HRES          @ 0x008;
+    vres_reg          VRES          @ 0x00C;
+    blob_addr_reg     BLOB_ADDR     @ 0x010;
+    blob_count_rd_reg BLOB_COUNT_RD @ 0x014;
+    blob_sx_reg       BLOB_SX       @ 0x018;
+    blob_sy_reg       BLOB_SY       @ 0x01C;
+    blob_xmin_reg     BLOB_XMIN     @ 0x020;
+    blob_xmax_reg     BLOB_XMAX     @ 0x024;
+    blob_ymin_reg     BLOB_YMIN     @ 0x028;
+    blob_ymax_reg     BLOB_YMAX     @ 0x02C;
+    frame_cnt_reg     FRAME_CNT     @ 0x030;
+    max_blobs_cfg_reg MAX_BLOBS_CFG @ 0x034;
+};
