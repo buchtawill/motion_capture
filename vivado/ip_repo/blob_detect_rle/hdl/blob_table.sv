@@ -26,6 +26,7 @@ module blob_table #(
 
     // Status
     output logic        flatten_done,
+    output logic        busy,
     output logic [6:0]  blob_count,
 
     // Result BRAM read port
@@ -180,6 +181,7 @@ module blob_table #(
         in_ready     = (state == BT_READY) && !merge_valid;
         merge_ready  = (state == BT_READY);
         flatten_done = (state == BT_DONE);
+        busy         = (state == BT_CLEAR);
     end
 
     // =========================================================================

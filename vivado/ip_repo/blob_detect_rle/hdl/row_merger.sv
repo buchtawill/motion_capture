@@ -40,15 +40,14 @@ module row_merger #(
     localparam int RUN_W  = $clog2(MAX_RUNS_PER_ROW);
 
     // =========================================================================
-    // Previous-row run buffer (register arrays for simplicity)
-    // Each entry: xs[15:0], xe[15:0], blob_id[6:0]
+    // Previous-row run buffer
     // =========================================================================
     logic [15:0] prev_xs  [0:MAX_RUNS_PER_ROW-1];
     logic [15:0] prev_xe  [0:MAX_RUNS_PER_ROW-1];
     logic [6:0]  prev_bid [0:MAX_RUNS_PER_ROW-1];
     logic [RUN_W-1:0] prev_count;
 
-    // Current-row run buffer (for swap at end of row)
+    // Current-row run buffer
     logic [15:0] curr_xs  [0:MAX_RUNS_PER_ROW-1];
     logic [15:0] curr_xe  [0:MAX_RUNS_PER_ROW-1];
     logic [6:0]  curr_bid [0:MAX_RUNS_PER_ROW-1];
@@ -61,9 +60,10 @@ module row_merger #(
         RM_IDLE     = 3'd0,
         RM_ACCEPT   = 3'd1,
         RM_SCAN     = 3'd2,
-        RM_EMIT     = 3'd3,
-        RM_MERGE    = 3'd4,
-        RM_ROW_SWAP = 3'd5
+        RM_ALLOC    = 3'd3,
+        RM_EMIT     = 3'd4,
+        RM_MERGE    = 3'd5,
+        RM_ROW_SWAP = 3'd6
     } rm_state_t;
 
     rm_state_t state, state_next;
@@ -77,16 +77,20 @@ module row_merger #(
     logic        cur_is_new;
     logic        cur_has_match;
 
-    // Scan pointer into prev-row buffer
     logic [RUN_W-1:0] scan_ptr;
     logic [RUN_W-1:0] scan_start;
 
-    // Merge queue
     logic [6:0]  merge_queue_a, merge_queue_b;
     logic        merge_pending;
 
-    // Blob ID allocator
     logic [7:0]  next_blob_id;
+
+    logic [15:0] last_seen_row;
+
+    // Row boundary detection: swap needed when a run arrives from a new row
+    // and the current row buffer has data to promote.
+    logic need_swap;
+    assign need_swap = in_valid && (in_row != last_seen_row) && (curr_count != '0);
 
     // =========================================================================
     // Next-state logic
@@ -103,39 +107,35 @@ module row_merger #(
             RM_ACCEPT: begin
                 if (clear)
                     state_next = RM_IDLE;
+                else if (need_swap)
+                    state_next = RM_ROW_SWAP;
                 else if (in_valid)
-                    state_next = (prev_count == '0) ? RM_EMIT : RM_SCAN;
+                    state_next = (prev_count == '0) ? RM_ALLOC : RM_SCAN;
             end
 
             RM_SCAN: begin
-                if (scan_ptr >= prev_count) begin
-                    // Scanned all prev runs
-                    state_next = RM_EMIT;
-                end else if (prev_xs[scan_ptr] > cur_xe + 16'd1) begin
-                    // Past possible overlap region
-                    state_next = RM_EMIT;
-                end
-                // else stay in RM_SCAN (advance scan_ptr)
+                if (scan_ptr >= prev_count)
+                    state_next = RM_ALLOC;
+                else if (prev_xs[scan_ptr] > cur_xe + 16'd1)
+                    state_next = RM_ALLOC;
+            end
+
+            RM_ALLOC: begin
+                state_next = RM_EMIT;
             end
 
             RM_EMIT: begin
                 if (out_valid && out_ready) begin
                     if (merge_pending)
                         state_next = RM_MERGE;
-                    else if (cur_last)
-                        state_next = RM_ROW_SWAP;
                     else
                         state_next = RM_ACCEPT;
                 end
             end
 
             RM_MERGE: begin
-                if (merge_valid && merge_ready) begin
-                    if (cur_last)
-                        state_next = RM_ROW_SWAP;
-                    else
-                        state_next = RM_ACCEPT;
-                end
+                if (merge_valid && merge_ready)
+                    state_next = RM_ACCEPT;
             end
 
             RM_ROW_SWAP: begin
@@ -150,7 +150,7 @@ module row_merger #(
     // Output assignments
     // =========================================================================
     always_comb begin
-        in_ready = (state == RM_ACCEPT) && enable && !clear;
+        in_ready = (state == RM_ACCEPT) && enable && !clear && !need_swap;
 
         out_valid   = (state == RM_EMIT);
         out_xs      = cur_xs;
@@ -186,6 +186,7 @@ module row_merger #(
             merge_pending <= 1'b0;
             merge_queue_a <= '0;
             merge_queue_b <= '0;
+            last_seen_row <= 16'hFFFF;
         end else begin
             state <= state_next;
 
@@ -197,10 +198,11 @@ module row_merger #(
                 next_blob_id  <= '0;
                 overflow      <= 1'b0;
                 merge_pending <= 1'b0;
+                last_seen_row <= 16'hFFFF;
             end else begin
                 case (state)
                     RM_ACCEPT: begin
-                        if (in_valid) begin
+                        if (in_valid && !need_swap) begin
                             cur_xs        <= in_xs;
                             cur_xe        <= in_xe;
                             cur_row       <= in_row;
@@ -209,6 +211,7 @@ module row_merger #(
                             cur_is_new    <= 1'b0;
                             merge_pending <= 1'b0;
                             scan_ptr      <= scan_start;
+                            last_seen_row <= in_row;
                         end
                     end
 
@@ -219,19 +222,16 @@ module row_merger #(
                             if (prev_xe[scan_ptr] + 16'd1 >= cur_xs &&
                                 prev_xs[scan_ptr] <= cur_xe + 16'd1) begin
                                 if (!cur_has_match) begin
-                                    // First overlap: take this blob_id
                                     cur_blob_id   <= prev_bid[scan_ptr];
                                     cur_has_match <= 1'b1;
                                     cur_is_new    <= 1'b0;
                                 end else if (prev_bid[scan_ptr] != cur_blob_id) begin
-                                    // Additional overlap with different blob: merge
                                     merge_queue_a <= cur_blob_id;
                                     merge_queue_b <= prev_bid[scan_ptr];
                                     merge_pending <= 1'b1;
                                 end
                             end
 
-                            // Advance scan_start past runs that can't overlap future runs
                             if (prev_xe[scan_ptr] + 16'd1 < cur_xs) begin
                                 scan_start <= scan_ptr + 1'b1;
                             end
@@ -240,26 +240,25 @@ module row_merger #(
                         end
                     end
 
+                    RM_ALLOC: begin
+                        if (!cur_has_match) begin
+                            if (next_blob_id < 8'(MAX_BLOBS)) begin
+                                cur_blob_id  <= next_blob_id[6:0];
+                                cur_is_new   <= 1'b1;
+                                next_blob_id <= next_blob_id + 8'd1;
+                            end else begin
+                                overflow <= 1'b1;
+                            end
+                        end
+                    end
+
                     RM_EMIT: begin
                         if (out_valid && out_ready) begin
-                            // If no match found, allocate new blob ID
-                            if (!cur_has_match) begin
-                                if (next_blob_id < 8'(MAX_BLOBS)) begin
-                                    cur_blob_id  <= next_blob_id[6:0];
-                                    cur_is_new   <= 1'b1;
-                                    next_blob_id <= next_blob_id + 8'd1;
-                                end else begin
-                                    overflow <= 1'b1;
-                                end
-                            end
-
                             // Store in current-row buffer
                             if (curr_count < RUN_W'(MAX_RUNS_PER_ROW - 1)) begin
                                 curr_xs[curr_count]  <= cur_xs;
                                 curr_xe[curr_count]  <= cur_xe;
-                                curr_bid[curr_count] <= cur_has_match ? cur_blob_id :
-                                                        (next_blob_id < 8'(MAX_BLOBS) ?
-                                                         next_blob_id[6:0] - 7'd1 : cur_blob_id);
+                                curr_bid[curr_count] <= cur_blob_id;
                                 curr_count           <= curr_count + 1'b1;
                             end
                         end
@@ -272,16 +271,20 @@ module row_merger #(
                     end
 
                     RM_ROW_SWAP: begin
-                        // Copy current row into previous row
-                        for (int i = 0; i < MAX_RUNS_PER_ROW; i++) begin
-                            prev_xs[i]  <= curr_xs[i];
-                            prev_xe[i]  <= curr_xe[i];
-                            prev_bid[i] <= curr_bid[i];
+                        if (in_row == last_seen_row + 16'd1) begin
+                            for (int i = 0; i < MAX_RUNS_PER_ROW; i++) begin
+                                prev_xs[i]  <= curr_xs[i];
+                                prev_xe[i]  <= curr_xe[i];
+                                prev_bid[i] <= curr_bid[i];
+                            end
+                            prev_count <= curr_count;
+                        end else begin
+                            prev_count <= '0;
                         end
-                        prev_count <= curr_count;
-                        curr_count <= '0;
-                        scan_start <= '0;
-                        scan_ptr   <= '0;
+                        curr_count    <= '0;
+                        scan_start    <= '0;
+                        scan_ptr      <= '0;
+                        last_seen_row <= in_row;
                     end
 
                     default: ;

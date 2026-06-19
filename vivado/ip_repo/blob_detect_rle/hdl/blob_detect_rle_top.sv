@@ -222,6 +222,7 @@ module blob_detect_rle_top #(
     // Blob table
     // =========================================================================
     logic        bt_clear, bt_flatten_start, bt_flatten_done;
+    logic        bt_clearing;
     logic [6:0]  bt_blob_count;
     logic [159:0] result_rd_data_w;
 
@@ -242,6 +243,7 @@ module blob_detect_rle_top #(
         .merge_b        (rm_merge_b),
         .merge_ready    (rm_merge_ready),
         .flatten_done   (bt_flatten_done),
+        .busy           (bt_clearing),
         .blob_count     (bt_blob_count),
         .result_rd_addr (blob_rd_addr[6:0]),
         .result_rd_data (result_rd_data_w)
@@ -278,7 +280,7 @@ module blob_detect_rle_top #(
         next_state = state;
         case (state)
             ST_IDLE:     if (cfg_start && dims_ok)                    next_state = ST_CLEAR;
-            ST_CLEAR:    next_state = ST_WAIT_SOF;
+            ST_CLEAR:    if (!bt_clearing) next_state = ST_WAIT_SOF;
             ST_WAIT_SOF: if (in_fifo_m_valid && in_pix_tuser)        next_state = ST_PROCESS;
             ST_PROCESS:  if (re_frame_done)                           next_state = ST_FINALIZE;
             ST_FINALIZE: if (bt_flatten_done)                         next_state = ST_DONE;
@@ -332,7 +334,7 @@ module blob_detect_rle_top #(
             if (state == ST_FINALIZE && next_state == ST_DONE)
                 frame_cnt <= frame_cnt + 32'h1;
 
-            if (state == ST_FINALIZE && next_state == ST_DONE)
+            if (state == ST_DONE)
                 blob_count_reg <= 8'(bt_blob_count);
         end
     end

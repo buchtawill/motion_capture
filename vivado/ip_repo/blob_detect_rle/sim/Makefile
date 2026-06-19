@@ -53,10 +53,10 @@ gen_stim:
 
 model:
 	mkdir -p $(OUT_DIR)
-	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/blob_detect_rle_model.py --output-dir $(OUT_DIR)/"
+	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/blob_detect_rle_model.py --input $(OUT_DIR)/frame_0000.hex --width 1280 --height 800 --threshold 128 --output $(OUT_DIR)/blobs_model.json"
 
 compare:
-	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/compare.py --rtl-out $(OUT_DIR)/blobs_rtl.hex --model-out $(OUT_DIR)/blobs_model.hex"
+	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/compare.py --rtl-output $(OUT_DIR)/blobs_rtl.hex --model-output $(OUT_DIR)/blobs_model.json"
 
 verify: gen_stim model compile sim_fst compare
 
