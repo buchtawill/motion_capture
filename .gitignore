@@ -1,2 +1,3 @@
 mocap_env
 **/sim_out
+**/__pycache__

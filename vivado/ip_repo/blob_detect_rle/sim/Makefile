@@ -35,14 +35,12 @@ XVLOG_INC := $(addprefix -i ,$(INCDIRS))
 .PHONY: all compile sim_fst sim clean cleanall gen_stim model compare verify
 
 all:
-	@echo "Usage: make sim"
+	@echo "Usage: make verify"
 
 compile:
 	mkdir -p $(OUT_DIR)
 	bash -c ". $(VIVADO_SETTINGS) && cd $(OUT_DIR) && xvlog --sv $(XVLOG_INC) $(SRCS) --log xvlog.log"
 	bash -c ". $(VIVADO_SETTINGS) && cd $(OUT_DIR) && xelab $(TB) -snapshot $(SNAPSHOT) -debug all --log xelab.log"
-
-sim: clean compile sim_fst
 
 sim_fst:
 	bash -c ". $(VIVADO_SETTINGS) && cd $(OUT_DIR) && xsim $(SNAPSHOT) -tclbatch $(SIM_DIR)/wave_vcd.tcl --log xsim.log && vcd2fst -v ./waves.vcd -f ./$(TB).fst"
@@ -52,11 +50,10 @@ gen_stim:
 	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/gen_stimulus.py --output-dir $(OUT_DIR)/"
 
 model:
-	mkdir -p $(OUT_DIR)
-	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/blob_detect_rle_model.py --input $(OUT_DIR)/frame_0000.hex --width 1280 --height 800 --threshold 128 --output $(OUT_DIR)/blobs_model.json"
+	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/run_models.py --dir $(OUT_DIR)/"
 
 compare:
-	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/compare.py --rtl-output $(OUT_DIR)/blobs_rtl.hex --model-output $(OUT_DIR)/blobs_model.json"
+	bash -c ". $(MOCAP_ENV) && python $(MDL_DIR)/compare_all.py --dir $(OUT_DIR)/"
 
 verify: gen_stim model compile sim_fst compare
 

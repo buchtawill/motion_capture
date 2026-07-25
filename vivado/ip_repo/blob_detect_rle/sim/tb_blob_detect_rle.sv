@@ -3,11 +3,8 @@
 module tb_blob_detect_rle;
 
     localparam real    CLK_HALF_NS     = 2.5;
-    localparam int     HRES            = 1280;
-    localparam int     VRES            = 800;
-    localparam int     MAX_FRAME_WORDS = HRES * VRES / 4;
+    localparam int     MAX_FRAME_WORDS = 1280 * 800 / 4;
     localparam int     MAX_BLOBS_PARAM = 128;
-    localparam string  FRAME_FILE      = "frame_0000.hex";
 
     localparam logic [5:0] ADDR_CTRL          = 6'h00;
     localparam logic [5:0] ADDR_STATUS        = 6'h04;
@@ -24,10 +21,16 @@ module tb_blob_detect_rle;
     localparam logic [5:0] ADDR_FRAME_CNT     = 6'h30;
     localparam logic [5:0] ADDR_MAX_BLOBS_CFG = 6'h34;
 
-    logic clk     = 1'b0;
-    logic aresetn  = 1'b0;
+    // =========================================================================
+    // Clock / reset
+    // =========================================================================
+    logic clk    = 1'b0;
+    logic aresetn = 1'b0;
     always #CLK_HALF_NS clk = ~clk;
 
+    // =========================================================================
+    // AXI-Lite signals
+    // =========================================================================
     logic [5:0]  s_axi_awaddr  = '0;
     logic [2:0]  s_axi_awprot  = '0;
     logic        s_axi_awvalid = 1'b0;
@@ -48,6 +51,9 @@ module tb_blob_detect_rle;
     logic        s_axi_rvalid;
     logic        s_axi_rready  = 1'b1;
 
+    // =========================================================================
+    // AXI-Stream signals
+    // =========================================================================
     logic [31:0] s_axis_tdata  = '0;
     logic [0:0]  s_axis_tuser  = '0;
     logic        s_axis_tlast  = 1'b0;
@@ -63,6 +69,9 @@ module tb_blob_detect_rle;
 
     logic        frame_done_irq_o;
 
+    // =========================================================================
+    // DUT
+    // =========================================================================
     blob_detect_rle_wrapper dut (
         .aclk             (clk),
         .aresetn          (aresetn),
@@ -99,32 +108,30 @@ module tb_blob_detect_rle;
         .frame_done_irq_o (frame_done_irq_o)
     );
 
+    // =========================================================================
+    // Test infrastructure
+    // =========================================================================
     int pass_count = 0;
     int fail_count = 0;
 
-    logic [31:0] frame_mem       [0:MAX_FRAME_WORDS-1];
-    logic [31:0] passthrough_mem [0:MAX_FRAME_WORDS-1];
-    int pt_idx = 0;
+    logic [31:0] frame_mem [0:MAX_FRAME_WORDS-1];
+    logic [31:0] pt_mem    [0:MAX_FRAME_WORDS-1];
+    int          pt_wr      = 0;
+    logic        pt_active  = 1'b0;
 
     typedef struct {
-        logic [31:0] count;
-        logic [31:0] sum_x;
-        logic [31:0] sum_y;
-        logic [31:0] xmin;
-        logic [31:0] xmax;
-        logic [31:0] ymin;
-        logic [31:0] ymax;
+        logic [31:0] count, sum_x, sum_y, xmin, xmax, ymin, ymax;
     } blob_desc_t;
 
-    blob_desc_t blob_data [0:MAX_BLOBS_PARAM-1];
-
+    // Passthrough capture
     always @(posedge clk) begin
-        if (m_axis_tvalid && m_axis_tready) begin
-            passthrough_mem[pt_idx] <= m_axis_tdata;
-            pt_idx <= pt_idx + 1;
+        if (pt_active && m_axis_tvalid && m_axis_tready) begin
+            pt_mem[pt_wr] <= m_axis_tdata;
+            pt_wr <= pt_wr + 1;
         end
     end
 
+    // Downstream backpressure (LFSR-based random ready)
     logic [7:0] bp_lfsr = 8'hA5;
     always @(posedge clk) begin
         if (aresetn) begin
@@ -135,9 +142,11 @@ module tb_blob_detect_rle;
         end
     end
 
+    // =========================================================================
+    // Utility tasks
+    // =========================================================================
     task automatic check(input string label, input logic got, input logic exp);
         if (got === exp) begin
-            $display("[%0t ns] [PASS] %s", $time, label);
             pass_count++;
         end else begin
             $display("[%0t ns] [FAIL] %s — expected %0b, got %0b", $time, label, exp, got);
@@ -147,7 +156,6 @@ module tb_blob_detect_rle;
 
     task automatic check32(input string label, input logic [31:0] got, input logic [31:0] exp);
         if (got === exp) begin
-            $display("[%0t ns] [PASS] %s: got 0x%08x", $time, label, got);
             pass_count++;
         end else begin
             $display("[%0t ns] [FAIL] %s — expected 0x%08x, got 0x%08x", $time, label, exp, got);
@@ -185,196 +193,257 @@ module tb_blob_detect_rle;
         @(posedge clk);
     endtask
 
-    initial begin : test_seq
-        int          total_beats;
-        logic [31:0] rdata;
-        logic [31:0] status_val;
-        int          blob_count;
-        int          fd;
+    // =========================================================================
+    // Stream one beat with random inter-beat gaps
+    // =========================================================================
+    task automatic stream_beat(input logic [31:0] data, input logic sof, input logic eol);
+        int gap;
+        s_axis_tdata  <= data;
+        s_axis_tuser  <= sof;
+        s_axis_tlast  <= eol;
+        s_axis_tvalid <= 1'b1;
+        @(posedge clk);
+        while (!s_axis_tready) @(posedge clk);
+        s_axis_tvalid <= 1'b0;
+        s_axis_tdata  <= '0;
+        s_axis_tuser  <= '0;
+        s_axis_tlast  <= 1'b0;
+        gap = $urandom_range(0, 3);
+        repeat (gap) @(posedge clk);
+    endtask
 
-        $timeformat(-9, 0, "", 1);
-        $display("==============================================");
-        $display("  tb_blob_detect_rle  %0dx%0d", HRES, VRES);
-        $display("==============================================");
+    // =========================================================================
+    // Wait for IRQ with timeout
+    // =========================================================================
+    task automatic wait_irq(output logic ok);
+        int timeout;
+        ok = 1'b1;
+        timeout = 0;
+        while (!frame_done_irq_o) begin
+            @(posedge clk);
+            timeout++;
+            if (timeout > 10_000_000) begin
+                $display("[%0t ns] [FAIL] Timeout waiting for frame_done_irq_o", $time);
+                fail_count++;
+                ok = 1'b0;
+                return;
+            end
+        end
+    endtask
 
-        total_beats = MAX_FRAME_WORDS;
+    // =========================================================================
+    // Write blob results to hex file
+    // =========================================================================
+    task automatic write_blobs_hex(
+        input string       filename,
+        input int           count,
+        input blob_desc_t   blobs [0:MAX_BLOBS_PARAM-1]
+    );
+        int fd;
+        fd = $fopen(filename, "w");
+        if (fd == 0) begin
+            $display("[%0t ns] [WARN] Could not open %s", $time, filename);
+            return;
+        end
+        $fwrite(fd, "%08x\n", count);
+        for (int b = 0; b < count; b++) begin
+            $fwrite(fd, "%08x\n", blobs[b].count);
+            $fwrite(fd, "%08x\n", blobs[b].sum_x);
+            $fwrite(fd, "%08x\n", blobs[b].sum_y);
+            $fwrite(fd, "%08x\n", blobs[b].xmin);
+            $fwrite(fd, "%08x\n", blobs[b].xmax);
+            $fwrite(fd, "%08x\n", blobs[b].ymin);
+            $fwrite(fd, "%08x\n", blobs[b].ymax);
+        end
+        $fclose(fd);
+    endtask
 
-        // Step 1: Reset
-        aresetn = 1'b0;
-        repeat(20) @(posedge clk);
-        aresetn = 1'b1;
-        repeat(10) @(posedge clk);
-        $display("[%0t ns] [INFO] Reset released", $time);
+    // =========================================================================
+    // Verify passthrough data matches input
+    // =========================================================================
+    task automatic verify_passthrough(input int total_beats);
+        int mismatches;
+        repeat (32) @(posedge clk);
+        mismatches = 0;
+        for (int i = 0; i < total_beats; i++) begin
+            if (pt_mem[i] !== frame_mem[i]) begin
+                if (mismatches < 5)
+                    $display("[%0t ns] [FAIL]   passthrough mismatch word %0d: 0x%08x != 0x%08x",
+                             $time, i, pt_mem[i], frame_mem[i]);
+                mismatches++;
+            end
+        end
+        if (mismatches == 0)
+            pass_count++;
+        else begin
+            $display("[%0t ns] [FAIL]   passthrough: %0d mismatches", $time, mismatches);
+            fail_count++;
+        end
+        check32("  passthrough word count", 32'(pt_wr), 32'(total_beats));
+    endtask
 
-        // Step 2: Read MAX_BLOBS_CFG
-        $display("\n[%0t ns] --- Step 2: Read MAX_BLOBS_CFG ---", $time);
-        axi_read(ADDR_MAX_BLOBS_CFG, rdata);
-        check32("MAX_BLOBS_CFG", rdata & 32'hFFFF, 32'd128);
+    // =========================================================================
+    // Run one frame end-to-end
+    // =========================================================================
+    task automatic run_frame(
+        input int     idx,
+        input string  frame_file,
+        input int     hres,
+        input int     vres,
+        input int     threshold,
+        input int     expected_blobs,
+        input string  desc
+    );
+        int             total_beats;
+        int             blob_count;
+        logic [31:0]    status_val;
+        logic           irq_ok;
+        string          out_file;
+        blob_desc_t     blobs [0:MAX_BLOBS_PARAM-1];
 
-        // Step 3: Configure HRES, VRES
-        $display("\n[%0t ns] --- Step 3: Configure HRES=%0d VRES=%0d ---", $time, HRES, VRES);
-        axi_write(ADDR_HRES, 32'(HRES));
-        axi_write(ADDR_VRES, 32'(VRES));
+        total_beats = hres * vres / 4;
 
-        // Step 4: Load frame
-        $display("\n[%0t ns] --- Step 4: Load frame from %s ---", $time, FRAME_FILE);
-        $readmemh(FRAME_FILE, frame_mem);
-        $display("[%0t ns] [INFO] Frame loaded (%0d words)", $time, total_beats);
+        $display("\n========== [%0d] %s ==========", idx, desc);
+        $display("[%0t ns] %s  %0dx%0d  thr=%0d  expect=%0d",
+                 $time, frame_file, hres, vres, threshold,
+                 expected_blobs);
 
-        // Step 5: Write CTRL: START=1, THRESHOLD=128
-        $display("\n[%0t ns] --- Step 5: Write CTRL (START, THRESHOLD=128) ---", $time);
-        axi_write(ADDR_CTRL, (32'd128 << 4) | 32'h0A);
+        // --- Configure ---
+        axi_write(ADDR_HRES, 32'(hres));
+        axi_write(ADDR_VRES, 32'(vres));
 
-        // Step 6: Wait for FSM to leave IDLE
-        $display("\n[%0t ns] --- Step 6: Wait for STATUS.READY = 0 ---", $time);
-        begin : wait_not_ready
+        // --- Load frame ---
+        for (int i = 0; i < MAX_FRAME_WORDS; i++) frame_mem[i] = 32'h0;
+        $readmemh(frame_file, frame_mem);
+
+        // --- Reset passthrough capture ---
+        pt_active = 1'b0;
+        @(posedge clk);
+        pt_wr = 0;
+        @(posedge clk);
+        pt_active = 1'b1;
+
+        // --- Start (threshold + START + AUTOINC) ---
+        axi_write(ADDR_CTRL, (32'(threshold) << 4) | 32'h0A);
+
+        // --- Wait for FSM to leave IDLE ---
+        begin : wait_start
             int timeout;
             timeout = 0;
             do begin
                 @(posedge clk);
                 timeout++;
                 if (timeout > 1000) begin
-                    $display("[%0t ns] [FAIL] Timeout waiting for STATUS.READY=0", $time);
+                    $display("[%0t ns] [FAIL] Timeout: FSM stuck in IDLE", $time);
                     fail_count++;
-                    disable wait_not_ready;
+                    return;
                 end
             end while (dut.u_blob_detect_rle_top.state == 3'd0);
         end
-        $display("[%0t ns] [INFO] FSM left IDLE", $time);
 
-        // Step 7: Stream frame
-        $display("\n[%0t ns] --- Step 7: Stream %0d beats ---", $time, total_beats);
-        begin : stream_frame
-            int gap;
-            for (int i = 0; i < total_beats; i++) begin
-                s_axis_tdata  <= frame_mem[i];
-                s_axis_tuser  <= (i == 0) ? 1'b1 : 1'b0;
-                s_axis_tlast  <= (((i + 1) * 4) % HRES == 0) ? 1'b1 : 1'b0;
-                s_axis_tvalid <= 1'b1;
-
-                @(posedge clk);
-                while (!s_axis_tready) @(posedge clk);
-
-                s_axis_tvalid <= 1'b0;
-                s_axis_tdata  <= '0;
-                s_axis_tuser  <= '0;
-                s_axis_tlast  <= 1'b0;
-
-                gap = $urandom_range(0, 3);
-                repeat(gap) @(posedge clk);
-
-                if (i % 32000 == 0)
-                    $display("[%0t ns] [INFO]   beat %0d / %0d", $time, i, total_beats);
-            end
+        // --- Stream frame ---
+        for (int i = 0; i < total_beats; i++) begin
+            stream_beat(
+                frame_mem[i],
+                (i == 0) ? 1'b1 : 1'b0,
+                (((i + 1) * 4) % hres == 0) ? 1'b1 : 1'b0
+            );
         end
-        $display("[%0t ns] [INFO] Frame streaming complete", $time);
 
-        // Step 8: Wait for frame_done_irq_o
-        $display("\n[%0t ns] --- Step 8: Wait for frame_done_irq_o ---", $time);
-        begin : wait_irq
-            int timeout;
-            timeout = 0;
-            while (!frame_done_irq_o) begin
-                @(posedge clk);
-                timeout++;
-                if (timeout > 10_000_000) begin
-                    $display("[%0t ns] [FAIL] Timeout waiting for frame_done_irq_o", $time);
-                    fail_count++;
-                    disable wait_irq;
-                end
-            end
-        end
-        $display("[%0t ns] [INFO] frame_done_irq_o asserted", $time);
-        check("frame_done_irq_o", frame_done_irq_o, 1'b1);
+        // --- Wait for IRQ ---
+        wait_irq(irq_ok);
+        if (!irq_ok) return;
+        check("  frame_done_irq", frame_done_irq_o, 1'b1);
 
-        axi_write(ADDR_CTRL, (32'd128 << 4) | 32'h0C);
+        // --- Clear IRQ, disable AUTOINC for explicit BLOB_ADDR reads ---
+        axi_write(ADDR_CTRL, (32'(threshold) << 4) | 32'h04);
 
-        // Step 9: Read STATUS
-        $display("\n[%0t ns] --- Step 9: Read STATUS ---", $time);
+        // --- Read STATUS ---
         axi_read(ADDR_STATUS, status_val);
         blob_count = int'(status_val[11:4]);
-        $display("[%0t ns] [INFO] STATUS = 0x%08x  BLOB_COUNT = %0d", $time, status_val, blob_count);
-        check("STATUS.FRAME_DONE", status_val[1], 1'b1);
+        $display("[%0t ns] STATUS=0x%08x  blobs=%0d  overflow=%0b",
+                 $time, status_val, blob_count, status_val[2]);
+        check("  STATUS.FRAME_DONE", status_val[1], 1'b1);
 
-        // Step 10: Read blob descriptors
-        $display("\n[%0t ns] --- Step 10: Read %0d blob descriptors ---", $time, blob_count);
-        axi_write(ADDR_CTRL, (32'd128 << 4));
+        // --- Check blob count ---
+        if (expected_blobs >= 0)
+            check32("  blob_count", 32'(blob_count), 32'(expected_blobs));
 
+        // --- Read blob descriptors ---
         for (int b = 0; b < blob_count; b++) begin
             axi_write(ADDR_BLOB_ADDR, 32'(b));
-            axi_read(ADDR_BLOB_COUNT_RD, blob_data[b].count);
-            axi_read(ADDR_BLOB_SX,       blob_data[b].sum_x);
-            axi_read(ADDR_BLOB_SY,       blob_data[b].sum_y);
-            axi_read(ADDR_BLOB_XMIN,     blob_data[b].xmin);
-            axi_read(ADDR_BLOB_XMAX,     blob_data[b].xmax);
-            axi_read(ADDR_BLOB_YMIN,     blob_data[b].ymin);
-            axi_read(ADDR_BLOB_YMAX,     blob_data[b].ymax);
-            $display("[%0t ns] [INFO] blob[%0d]: count=%0d sx=%0d sy=%0d xmin=%0d xmax=%0d ymin=%0d ymax=%0d",
-                $time, b,
-                blob_data[b].count, blob_data[b].sum_x, blob_data[b].sum_y,
-                blob_data[b].xmin, blob_data[b].xmax,
-                blob_data[b].ymin, blob_data[b].ymax);
+            axi_read(ADDR_BLOB_COUNT_RD, blobs[b].count);
+            axi_read(ADDR_BLOB_SX,       blobs[b].sum_x);
+            axi_read(ADDR_BLOB_SY,       blobs[b].sum_y);
+            axi_read(ADDR_BLOB_XMIN,     blobs[b].xmin);
+            axi_read(ADDR_BLOB_XMAX,     blobs[b].xmax);
+            axi_read(ADDR_BLOB_YMIN,     blobs[b].ymin);
+            axi_read(ADDR_BLOB_YMAX,     blobs[b].ymax);
+            $display("[%0t ns]   blob[%0d]: count=%0d centroid=(%0d/%0d,%0d/%0d) bbox=(%0d,%0d)-(%0d,%0d)",
+                     $time, b,
+                     blobs[b].count,
+                     blobs[b].sum_x, blobs[b].count,
+                     blobs[b].sum_y, blobs[b].count,
+                     blobs[b].xmin, blobs[b].ymin,
+                     blobs[b].xmax, blobs[b].ymax);
         end
 
-        // Step 11: Write blobs_rtl.hex
-        $display("\n[%0t ns] --- Step 11: Write blobs_rtl.hex ---", $time);
-        fd = $fopen("blobs_rtl.hex", "w");
-        if (fd == 0) begin
-            $display("[%0t ns] [WARN] Could not open blobs_rtl.hex", $time);
-        end else begin
-            $fwrite(fd, "%08x\n", blob_count);
-            for (int b = 0; b < blob_count; b++) begin
-                $fwrite(fd, "%08x\n", blob_data[b].count);
-                $fwrite(fd, "%08x\n", blob_data[b].sum_x);
-                $fwrite(fd, "%08x\n", blob_data[b].sum_y);
-                $fwrite(fd, "%08x\n", blob_data[b].xmin);
-                $fwrite(fd, "%08x\n", blob_data[b].xmax);
-                $fwrite(fd, "%08x\n", blob_data[b].ymin);
-                $fwrite(fd, "%08x\n", blob_data[b].ymax);
-            end
-            $fclose(fd);
-            $display("[%0t ns] [INFO] Wrote %0d blobs to blobs_rtl.hex", $time, blob_count);
-        end
+        // --- Write output hex ---
+        $sformat(out_file, "blobs_rtl_%04d.hex", idx);
+        write_blobs_hex(out_file, blob_count, blobs);
+        $display("[%0t ns] Wrote %0d blobs to %s", $time, blob_count, out_file);
 
-        // Step 12: Verify passthrough
-        $display("\n[%0t ns] --- Step 12: Verify AXIS passthrough (%0d words) ---", $time, total_beats);
-        repeat(32) @(posedge clk);
-        begin : check_passthrough
-            int pt_mismatches;
-            pt_mismatches = 0;
-            for (int i = 0; i < total_beats; i++) begin
-                if (passthrough_mem[i] !== frame_mem[i]) begin
-                    if (pt_mismatches < 10)
-                        $display("[%0t ns] [FAIL] Passthrough mismatch at word %0d: got 0x%08x expected 0x%08x",
-                                 $time, i, passthrough_mem[i], frame_mem[i]);
-                    pt_mismatches++;
-                end
-            end
-            if (pt_mismatches == 0) begin
-                $display("[%0t ns] [PASS] AXIS passthrough: all %0d words match", $time, total_beats);
-                pass_count++;
-            end else begin
-                $display("[%0t ns] [FAIL] AXIS passthrough: %0d mismatches", $time, pt_mismatches);
-                fail_count++;
-            end
-        end
-        check32("Passthrough word count", 32'(pt_idx), 32'(total_beats));
+        // --- Verify passthrough ---
+        verify_passthrough(total_beats);
 
-        // Summary
+    endtask
+
+    // =========================================================================
+    // Main test sequence
+    // =========================================================================
+    initial begin : test_seq
+        logic [31:0] rdata;
+
+        $timeformat(-9, 0, "", 1);
+        $display("==============================================");
+        $display("  tb_blob_detect_rle — multi-frame test suite");
+        $display("==============================================");
+
+        // --- Hardware reset ---
+        aresetn = 1'b0;
+        repeat (20) @(posedge clk);
+        aresetn = 1'b1;
+        repeat (10) @(posedge clk);
+
+        // --- Sanity: MAX_BLOBS_CFG ---
+        axi_read(ADDR_MAX_BLOBS_CFG, rdata);
+        check32("MAX_BLOBS_CFG", rdata & 32'hFFFF, 32'd128);
+
+        // --- Test suite ---
+        //       idx   file               hres  vres  thr  exp  description
+        run_frame(0, "frame_0000.hex",    1280,  800, 128,   8, "8 random blobs 1280x800");
+        run_frame(1, "frame_0001.hex",    1280,  720, 128,   5, "5 random blobs 1280x720");
+        run_frame(2, "frame_0002.hex",     640,  400, 128,  10, "10 random blobs 640x400");
+        run_frame(3, "frame_0003.hex",    1280,  800, 128,   0, "all-black (no blobs)");
+        run_frame(5, "frame_0005.hex",     640,  400, 128,   1, "single pixel blob");
+        run_frame(6, "frame_0006.hex",    1280,  800, 128,   2, "nearly touching (gap=2)");
+        run_frame(7, "frame_0007.hex",    1280,  800, 128,   1, "overlapping (merge to 1)");
+
+        // --- Summary ---
         $display("\n==============================================");
-        $display("[%0t ns]   Results: %0d passed, %0d failed", $time, pass_count, fail_count);
+        $display("  Results: %0d passed, %0d failed", pass_count, fail_count);
         $display("==============================================");
         if (fail_count == 0)
-            $display("[%0t ns]   SUCCESS: ALL TESTS PASSED", $time);
+            $display("  SUCCESS: ALL TESTS PASSED");
         else
-            $display("[%0t ns]   ERROR: FAILURES DETECTED", $time);
+            $display("  ERROR: %0d FAILURE(S) DETECTED", fail_count);
 
         $finish;
     end
 
     initial begin : timeout_watchdog
-        #50ms;
-        $display("[%0t ns] [TIMEOUT] Simulation exceeded 50 ms", $time);
+        #200ms;
+        $display("[TIMEOUT] Simulation exceeded 200 ms");
         $fatal;
     end
 
