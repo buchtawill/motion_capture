@@ -125,6 +125,7 @@ project-spec/meta-user/
 │   ├── mocap-perf/                     # V4L2 FPS benchmark
 │   ├── mocap-server/                   # TCP streaming server
 │   ├── mocap-hdmi-memcp/                # HDMI display (CPU memcpy to /dev/fb0)
+│   ├── mocap-hdmi-drm/                  # HDMI display (zero-copy DRM/KMS NV12 scanout)
 │   ├── camera-fpga-files/              # Installs bitstream + overlay + loader script
 │   ├── hello/                          # Default PetaLinux template
 │   └── rootfs-bashrc/                  # Shell config for root + petalinux users
@@ -264,21 +265,38 @@ modetest -M xlnx -c    # connectors + modes
 modetest -M xlnx -p    # planes + supported formats (check for NV12 / NV16)
 ```
 
-### Planned: mocap-hdmi-drm (zero-copy scanout)
+### mocap-hdmi-drm (zero-copy scanout)
 
 Successor to `mocap-hdmi-memcp` that drives the same controller via DRM/KMS
-instead of legacy fbdev: V4L2 buffers are exported as dmabuf, imported as DRM
-framebuffers, and page-flipped so the DisplayPort DMA scans directly out of the
-capture buffer — no CPU pixel copy. Same capture/AE plumbing; frame-drop logic
-becomes "at most one flip in flight, always flip the newest buffer."
+instead of legacy fbdev: V4L2 buffers are exported as dmabuf (`VIDIOC_EXPBUF`),
+imported as DRM framebuffers (`drmPrimeFDToHandle` + `drmModeAddFB2`), and
+page-flipped so the DisplayPort DMA scans directly out of the capture buffer —
+no CPU pixel copy. Same capture/AE plumbing as the other apps. A single poll()
+loop services both the V4L2 fd and the DRM fd, so buffer ownership is race-free;
+frame-drop logic is "at most one flip in flight, always flip the newest buffer."
 
 The DP scanout plane has no grayscale format, but it has a **hardware CSC**, so
-mono Y8 is displayed by presenting each frame as semi-planar YUV (`NV12`/`NV16`):
-luma plane = the capture dmabuf (zero-copy), chroma plane = a one-time
-constant-`0x80` buffer → the DP hardware does Y→RGB during scanout. No PL CSC and
-no Mali GPU pass needed. (Pending: `modetest -M xlnx -p` confirmation that the
-plane advertises `NV12`/`NV16`.) Budget ~4–5 V4L2 buffers so one can stay on
-screen until the next flip completes without the camera overwriting it.
+mono Y8 is displayed by presenting each frame as semi-planar `NV12`: luma plane =
+the capture dmabuf (zero-copy), chroma plane = a one-time constant-`0x80` buffer
+→ the DP hardware does Y→RGB during scanout. No PL CSC and no Mali GPU pass.
+
+There is no scaler in this path, so the display mode must exactly match the
+capture size — default `1280x720` is both a sensor mode and a `DP-1` mode. Other
+sensor modes (1280x800, 640x400) have no matching display mode and are rejected
+with a list of what the connector supports.
+
+```bash
+# run over serial/SSH, not the on-screen console (it owns the display via DRM master)
+mocap-hdmi-drm                          # default: 1280x720 on DP-1, zero-copy
+mocap-hdmi-drm --ae --isp               # AE with hardware ISP histogram
+mocap-hdmi-drm --fps 120                # higher frame rate
+mocap-hdmi-drm --connector DP-1 -b 6    # explicit connector, more buffers
+```
+
+The app takes DRM master (suspending fbcon/the console while it runs) and
+restores the original CRTC on exit. It needs ≥4 V4L2 buffers (default 5) since
+the display can hold up to 3 in flight. If `drmModeAddFB2` fails, the DP plane
+doesn't support `NV12` — the app prints the plane's actual format list.
 
 ### camera-fpga-files
 
