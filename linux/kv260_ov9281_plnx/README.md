@@ -124,6 +124,7 @@ project-spec/meta-user/
 │   ├── mocap-sanity/                   # Single-frame V4L2 capture tool
 │   ├── mocap-perf/                     # V4L2 FPS benchmark
 │   ├── mocap-server/                   # TCP streaming server
+│   ├── mocap-hdmi-memcp/                # HDMI display (CPU memcpy to /dev/fb0)
 │   ├── camera-fpga-files/              # Installs bitstream + overlay + loader script
 │   ├── hello/                          # Default PetaLinux template
 │   └── rootfs-bashrc/                  # Shell config for root + petalinux users
@@ -197,6 +198,87 @@ mocap-server --mode 640x400 --fps 120  # lower res, higher FPS
 ```
 
 Connect from the host with `python helper_scripts/stream_client.py 10.0.0.100 5001`.
+
+### mocap-hdmi-memcp
+
+HDMI display prototype. A capture thread dequeues V4L2 frames into a single-slot
+"latest frame" (not a queue); the main thread's render loop always draws the
+newest frame available and drops anything superseded before it gets a chance to
+draw, keeping end-to-end lag low. Frames are copied CPU-side straight from the
+mmap'd V4L2 buffer into the mmap'd `/dev/fb0` framebuffer — the "memcp" in the
+name flags that this is a plain software copy, not a DMA path. A future
+`mocap-hdmi-dma` app can swap in a VDMA/display-DMA engine without touching the
+capture/AE code here.
+
+```bash
+mocap-hdmi-memcp                           # default: 1280x800 onto /dev/fb0
+mocap-hdmi-memcp --ae --isp                # AE with hardware ISP histogram
+mocap-hdmi-memcp --mode 640x400 --fps 120  # lower res, higher FPS
+mocap-hdmi-memcp --fit stretch             # fill the screen instead of letterboxing
+```
+
+Only 8-bpp mono (`GREY`) is rendered meaningfully; other 8-bpp RAW formats are
+shown as raw luma with a warning (no debayering in this prototype).
+
+## Display / HDMI output
+
+The KV260's HDMI connector is driven by the **Zynq UltraScale+ PS DisplayPort
+subsystem** (the `xlnx` DRM driver at `fd4a0000.display`), *not* by a PL
+video-out path. There is no HDMI TX IP in the current bitstream — the capture
+pipeline is CSI-2 RX → VDMA only.
+
+Findings from the target (confirm on your own board with the commands below):
+
+| Item | Value |
+|------|-------|
+| DRM device | `/dev/dri/card0` |
+| Driver | `xlnx`, `dev=fd4a0000.display` (`zynqmp-dpsub`) |
+| Connected connector | **`DP-1`** (id 45) — HDMI routes through the PS DP, so it enumerates as DP, not HDMI-A |
+| Preferred mode | **1920x1080 @ 60** (plus 144/120/50 Hz and a full ladder down to 640x480) |
+| Legacy `/dev/fb0` | fbdev **emulation** over the same DRM device (`CONFIG_DRM_FBDEV_EMULATION`); `mocap-hdmi-memcp` writes here |
+
+`/dev/fb0` and `/dev/dri/card0` are two front-ends to the **same** controller.
+A DRM/KMS client that takes DRM master automatically suspends the fbdev
+emulation (and the framebuffer console, `fbcon`) while it owns the display, and
+restores them on exit — so a DRM app supersedes the fb0 path rather than racing
+it. Run any such app over **serial/SSH**, not the on-screen console, so you keep
+a control terminal (fbcon disappears from HDMI while the DRM app draws).
+
+Inspect the display stack (no extra tools):
+
+```bash
+ls /dev/dri/                                              # card0
+for f in /sys/class/drm/card*/*/status; do echo "$f: $(cat $f)"; done
+cat /sys/class/drm/card0/card0-DP-1/modes
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+cat /sys/kernel/debug/dri/*/name                         # -> xlnx dev=fd4a0000.display
+```
+
+For plane/format details, install `modetest` (the `libdrm-tests` sub-package,
+pulled in via `IMAGE_INSTALL:append = " libdrm-tests"` in `petalinuxbsp.conf` —
+it isn't exposed in rootfs menuconfig). `modetest` does not auto-detect the
+`xlnx` driver, so pass it explicitly:
+
+```bash
+modetest -M xlnx -c    # connectors + modes
+modetest -M xlnx -p    # planes + supported formats (check for NV12 / NV16)
+```
+
+### Planned: mocap-hdmi-drm (zero-copy scanout)
+
+Successor to `mocap-hdmi-memcp` that drives the same controller via DRM/KMS
+instead of legacy fbdev: V4L2 buffers are exported as dmabuf, imported as DRM
+framebuffers, and page-flipped so the DisplayPort DMA scans directly out of the
+capture buffer — no CPU pixel copy. Same capture/AE plumbing; frame-drop logic
+becomes "at most one flip in flight, always flip the newest buffer."
+
+The DP scanout plane has no grayscale format, but it has a **hardware CSC**, so
+mono Y8 is displayed by presenting each frame as semi-planar YUV (`NV12`/`NV16`):
+luma plane = the capture dmabuf (zero-copy), chroma plane = a one-time
+constant-`0x80` buffer → the DP hardware does Y→RGB during scanout. No PL CSC and
+no Mali GPU pass needed. (Pending: `modetest -M xlnx -p` confirmation that the
+plane advertises `NV12`/`NV16`.) Budget ~4–5 V4L2 buffers so one can stay on
+screen until the next flip completes without the camera overwriting it.
 
 ### camera-fpga-files
 

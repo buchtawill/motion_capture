@@ -10,3 +10,4 @@ CONFIG_camera-fpga-files
 CONFIG_mocap-sanity
 CONFIG_mocap-perf
 CONFIG_mocap-server
+CONFIG_mocap-hdmi-memcp

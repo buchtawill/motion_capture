@@ -11,6 +11,10 @@ config hello
 	 bool "hello"
 	 help
 	
+config mocap-hdmi-memcp  
+	 bool "mocap-hdmi-memcp"
+	 help
+	
 config mocap-perf  
 	 bool "mocap-perf"
 	 help

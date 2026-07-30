@@ -4084,6 +4084,7 @@ CONFIG_Init-manager-systemd=y
 CONFIG_camera-fpga-files=y
 # CONFIG_gpio-demo is not set
 CONFIG_hello=y
+CONFIG_mocap-hdmi-memcp=y
 CONFIG_mocap-perf=y
 CONFIG_mocap-sanity=y
 CONFIG_mocap-server=y
