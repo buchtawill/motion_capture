@@ -58,13 +58,34 @@ static void on_signal(int) { g_quit = true; }
 
 // --- DRM display state ------------------------------------------------------
 
+// Plane-property object ids (global per driver, so the same ids apply to every
+// plane -- we cache them once from the chosen overlay plane).
+struct PlaneProps {
+    uint32_t fb_id = 0, crtc_id = 0;
+    uint32_t crtc_x = 0, crtc_y = 0, crtc_w = 0, crtc_h = 0;
+    uint32_t src_x = 0, src_y = 0, src_w = 0, src_h = 0;
+};
+
 struct DrmDisplay {
     int fd = -1;
     uint32_t conn_id = 0;
     uint32_t crtc_id = 0;
+    int crtc_index = -1; // bit position of crtc_id in resources (for possible_crtcs)
     drmModeModeInfo mode{};
     drmModeCrtc *saved_crtc = nullptr; // to restore fbcon on exit
     bool master = false;
+
+    // The NV12-capable scanout plane. On this DP controller NV12 lives on an
+    // OVERLAY plane, not the RGB-only primary -- so we drive it via atomic KMS.
+    uint32_t plane_id = 0;
+    uint32_t primary_plane_id = 0; // disabled during our modeset
+
+    // Cached atomic property ids.
+    uint32_t prop_crtc_mode_id = 0, prop_crtc_active = 0;
+    uint32_t prop_conn_crtc_id = 0;
+    uint32_t prop_primary_alpha = 0; // global-alpha prop on the graphics plane
+    PlaneProps pp;
+    uint32_t mode_blob_id = 0;
 
     // Shared constant-0x80 chroma buffer (one for all frames).
     uint32_t chroma_handle = 0;
@@ -72,6 +93,38 @@ struct DrmDisplay {
     uint8_t *chroma_map = nullptr;
     size_t chroma_size = 0;
 };
+
+#ifndef DRM_PLANE_TYPE_OVERLAY
+#define DRM_PLANE_TYPE_OVERLAY 0
+#define DRM_PLANE_TYPE_PRIMARY 1
+#define DRM_PLANE_TYPE_CURSOR 2
+#endif
+
+// Look up a named property on a DRM object; returns its current value (or
+// UINT64_MAX if absent) and, via out_id, its (driver-global) property id.
+static uint64_t drm_prop(int fd, uint32_t obj_id, uint32_t obj_type,
+                         const char *name, uint32_t *out_id = nullptr) {
+    drmModeObjectProperties *props =
+        drmModeObjectGetProperties(fd, obj_id, obj_type);
+    if (!props)
+        return UINT64_MAX;
+    uint64_t val = UINT64_MAX;
+    for (uint32_t i = 0; i < props->count_props; ++i) {
+        drmModePropertyRes *p = drmModeGetProperty(fd, props->props[i]);
+        if (!p)
+            continue;
+        if (std::strcmp(p->name, name) == 0) {
+            val = props->prop_values[i];
+            if (out_id)
+                *out_id = p->prop_id;
+            drmModeFreeProperty(p);
+            break;
+        }
+        drmModeFreeProperty(p);
+    }
+    drmModeFreeObjectProperties(props);
+    return val;
+}
 
 // Find a connected connector by name (e.g. "DP-1") and a mode exactly matching
 // wxh. Fills conn_id, crtc_id, mode. Aborts with context on failure.
@@ -156,6 +209,11 @@ static void drm_pick_output(DrmDisplay &d, const std::string &conn_want,
         die("no usable CRTC for " + conn_name);
     }
     d.crtc_id = crtc_id;
+    for (int j = 0; j < res->count_crtcs; ++j)
+        if (res->crtcs[j] == crtc_id) {
+            d.crtc_index = j;
+            break;
+        }
 
     std::cout << "Display: " << conn_name << " (conn " << d.conn_id << ", crtc "
               << d.crtc_id << ") mode " << d.mode.hdisplay << "x"
@@ -225,6 +283,232 @@ static void drm_make_chroma(DrmDisplay &d, unsigned w, unsigned h) {
         fail("mmap chroma");
     d.chroma_map = static_cast<uint8_t *>(m);
     std::memset(d.chroma_map, 0x80, d.chroma_size); // neutral U=V=128
+}
+
+// Pick the scanout plane. NV12 is only offered on an OVERLAY plane on this DP
+// controller, so we search for the (overlay) plane usable on our CRTC whose
+// format list contains NV12. Also records the primary plane so the modeset can
+// disable it (its stale full-res RGB fb would otherwise reject our modeset).
+static void drm_pick_plane(DrmDisplay &d) {
+    drmModePlaneRes *pr = drmModeGetPlaneResources(d.fd);
+    if (!pr)
+        fail("drmModeGetPlaneResources (is DRM_CLIENT_CAP_UNIVERSAL_PLANES set?)");
+    for (uint32_t i = 0; i < pr->count_planes; ++i) {
+        drmModePlane *p = drmModeGetPlane(d.fd, pr->planes[i]);
+        if (!p)
+            continue;
+        if (d.crtc_index < 0 ||
+            !(p->possible_crtcs & (1u << d.crtc_index))) {
+            drmModeFreePlane(p);
+            continue;
+        }
+        uint64_t type =
+            drm_prop(d.fd, p->plane_id, DRM_MODE_OBJECT_PLANE, "type");
+        bool has_nv12 = false;
+        for (uint32_t f = 0; f < p->count_formats; ++f)
+            if (p->formats[f] == DRM_FORMAT_NV12)
+                has_nv12 = true;
+        if (type == DRM_PLANE_TYPE_PRIMARY && !d.primary_plane_id)
+            d.primary_plane_id = p->plane_id;
+        if (has_nv12 && !d.plane_id &&
+            (type == DRM_PLANE_TYPE_OVERLAY || type == DRM_PLANE_TYPE_PRIMARY))
+            d.plane_id = p->plane_id;
+        drmModeFreePlane(p);
+    }
+    drmModeFreePlaneResources(pr);
+    if (!d.plane_id) {
+        std::cerr << prog_name() << ": no NV12-capable plane on crtc "
+                  << d.crtc_id << ". Plane formats:\n";
+        drm_dump_primary_formats(d);
+        die("cannot scan out NV12 on this display");
+    }
+    std::cout << "Scanout plane " << d.plane_id << " (NV12 overlay)"
+              << (d.primary_plane_id
+                      ? ", primary " + std::to_string(d.primary_plane_id) +
+                            " (disabled during display)"
+                      : "")
+              << "\n";
+}
+
+// Cache all atomic property ids we commit each frame. Aborts if any is missing.
+static void drm_cache_props(DrmDisplay &d) {
+    auto need = [&](uint32_t obj, uint32_t type, const char *name,
+                    uint32_t *dst) {
+        drm_prop(d.fd, obj, type, name, dst);
+        if (!*dst)
+            die(std::string("atomic property '") + name + "' not found");
+    };
+    need(d.crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID", &d.prop_crtc_mode_id);
+    need(d.crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE", &d.prop_crtc_active);
+    need(d.conn_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", &d.prop_conn_crtc_id);
+    // The DPSUB blends the video (overlay) layer UNDER the graphics (primary)
+    // layer; global alpha defaults to fully-opaque graphics, so the video layer
+    // is invisible until we set the graphics plane's "alpha" to 0. This prop
+    // lives on the PRIMARY plane, not our overlay (driver: zynqmp_disp.c).
+    if (d.primary_plane_id)
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "alpha",
+             &d.prop_primary_alpha);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &d.pp.fb_id);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID", &d.pp.crtc_id);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X", &d.pp.crtc_x);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y", &d.pp.crtc_y);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W", &d.pp.crtc_w);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H", &d.pp.crtc_h);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X", &d.pp.src_x);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y", &d.pp.src_y);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W", &d.pp.src_w);
+    need(d.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H", &d.pp.src_h);
+}
+
+// One blocking atomic modeset: activate the CRTC at our mode, route the
+// connector to it, disable the primary plane, and place the overlay plane
+// (full CRTC, unscaled 1:1) with the first frame. No page-flip event.
+static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
+    if (drmModeCreatePropertyBlob(d.fd, &d.mode, sizeof(d.mode),
+                                  &d.mode_blob_id) != 0)
+        fail("drmModeCreatePropertyBlob");
+
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    drmModeAtomicAddProperty(req, d.crtc_id, d.prop_crtc_mode_id, d.mode_blob_id);
+    drmModeAtomicAddProperty(req, d.crtc_id, d.prop_crtc_active, 1);
+    drmModeAtomicAddProperty(req, d.conn_id, d.prop_conn_crtc_id, d.crtc_id);
+    if (d.primary_plane_id && d.primary_plane_id != d.plane_id) {
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.fb_id, 0);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.crtc_id, 0);
+    }
+    // Make the graphics layer fully transparent so the video overlay shows
+    // through the blender (the global-alpha default hides it otherwise).
+    if (d.prop_primary_alpha)
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.prop_primary_alpha, 0);
+    const uint64_t w = d.mode.hdisplay, h = d.mode.vdisplay;
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.fb_id, fb);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_id, d.crtc_id);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_x, 0);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_y, 0);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_w, w);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_h, h);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.src_x, 0);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.src_y, 0);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.src_w, w << 16);
+    drmModeAtomicAddProperty(req, d.plane_id, d.pp.src_h, h << 16);
+
+    int r = drmModeAtomicCommit(d.fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET,
+                                nullptr);
+    drmModeAtomicFree(req);
+    if (r != 0)
+        fail("drmModeAtomicCommit (modeset)");
+}
+
+// DRM sanity path (--test): drive the exact NV12/overlay/CSC scanout pipeline
+// with a locally generated luma buffer of vertical grayscale bars -- no camera,
+// no V4L2, no dmabuf export. If this shows bars but the live path is black, the
+// fault is isolated to the V4L2->DRM buffer import, not the DP display path.
+static int run_test_pattern(const std::string &drm_dev,
+                            const std::string &conn_name, unsigned w,
+                            unsigned h) {
+    DrmDisplay d;
+    d.fd = open(drm_dev.c_str(), O_RDWR | O_CLOEXEC);
+    if (d.fd == -1)
+        fail("open " + drm_dev);
+    if (drmSetMaster(d.fd) != 0)
+        fail("drmSetMaster (is a compositor/other KMS client holding it?)");
+    d.master = true;
+    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) != 0)
+        fail("drmSetClientCap UNIVERSAL_PLANES");
+    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_ATOMIC, 1) != 0)
+        fail("drmSetClientCap ATOMIC");
+
+    // The ZynqMP DPSUB video layer must exactly match the panel's active size
+    // (kernel: "Layer width:height must be 1920:1080") and the CRTC mode can't
+    // be changed to 720p ("failed to set mode: Function not implemented"). So
+    // the NV12 overlay path only works at the native 1920x1080; ignore the
+    // requested size here.
+    w = 1920;
+    h = 1080;
+
+    drm_pick_output(d, conn_name, w, h);
+    drm_pick_plane(d);
+    drm_cache_props(d);
+    d.saved_crtc = drmModeGetCrtc(d.fd, d.crtc_id);
+    drm_make_chroma(d, w, h);
+
+    // Luma dumb buffer filled with N vertical grayscale bars (0 .. 255).
+    drm_mode_create_dumb creq{};
+    creq.width = w;
+    creq.height = h;
+    creq.bpp = 8;
+    if (drmIoctl(d.fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) != 0)
+        fail("DRM_IOCTL_MODE_CREATE_DUMB (luma)");
+    const uint32_t luma_handle = creq.handle, luma_stride = creq.pitch;
+    drm_mode_map_dumb mreq{};
+    mreq.handle = luma_handle;
+    if (drmIoctl(d.fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) != 0)
+        fail("DRM_IOCTL_MODE_MAP_DUMB (luma)");
+    uint8_t *lm = static_cast<uint8_t *>(mmap(nullptr, creq.size,
+                                              PROT_READ | PROT_WRITE, MAP_SHARED,
+                                              d.fd, mreq.offset));
+    if (lm == MAP_FAILED)
+        fail("mmap luma");
+    const unsigned bars = 8;
+    for (unsigned y = 0; y < h; ++y) {
+        uint8_t *row = lm + static_cast<size_t>(y) * luma_stride;
+        for (unsigned x = 0; x < w; ++x) {
+            unsigned b = x * bars / w;                       // 0 .. bars-1
+            row[x] = static_cast<uint8_t>(b * 255 / (bars - 1));
+        }
+    }
+
+    uint32_t handles[4] = {luma_handle, d.chroma_handle, 0, 0};
+    uint32_t pitches[4] = {luma_stride, d.chroma_stride, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    uint32_t fb = 0;
+    if (drmModeAddFB2(d.fd, w, h, DRM_FORMAT_NV12, handles, pitches, offsets,
+                      &fb, 0) != 0) {
+        std::cerr << prog_name()
+                  << ": drmModeAddFB2 NV12 failed: " << strerror(errno) << "\n";
+        drm_dump_primary_formats(d);
+        die("cannot create NV12 test framebuffer");
+    }
+
+    drm_atomic_modeset(d, fb);
+    std::cout << "TEST: " << bars << " grayscale bars (Y=0..255, chroma=0x80) on "
+              << conn_name << " via NV12 overlay. Ctrl-C to stop.\n";
+
+    struct sigaction sa {};
+    sa.sa_handler = on_signal;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+    while (!g_quit)
+        pause(); // static image; wake on signal
+
+    if (d.plane_id)
+        drmModeSetPlane(d.fd, d.plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (d.mode_blob_id)
+        drmModeDestroyPropertyBlob(d.fd, d.mode_blob_id);
+    if (d.saved_crtc) {
+        drmModeSetCrtc(d.fd, d.saved_crtc->crtc_id, d.saved_crtc->buffer_id,
+                       d.saved_crtc->x, d.saved_crtc->y, &d.conn_id, 1,
+                       &d.saved_crtc->mode);
+        drmModeFreeCrtc(d.saved_crtc);
+    }
+    if (fb)
+        drmModeRmFB(d.fd, fb);
+    munmap(lm, creq.size);
+    drm_mode_destroy_dumb dreq{};
+    dreq.handle = luma_handle;
+    drmIoctl(d.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+    if (d.chroma_map)
+        munmap(d.chroma_map, d.chroma_size);
+    if (d.chroma_handle) {
+        drm_mode_destroy_dumb cdr{};
+        cdr.handle = d.chroma_handle;
+        drmIoctl(d.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &cdr);
+    }
+    if (d.master)
+        drmDropMaster(d.fd);
+    close(d.fd);
+    std::cout << "Stopped.\n";
+    return 0;
 }
 
 // --- main -------------------------------------------------------------------
@@ -311,6 +595,11 @@ int main(int argc, char *argv[]) {
         .default_value(false)
         .implicit_value(true)
         .help("suppress periodic displayed/dropped-frame stats line");
+    program.add_argument("--test")
+        .default_value(false)
+        .implicit_value(true)
+        .help("DRM sanity mode: display static grayscale bars via the NV12 "
+              "overlay path, no camera/pipeline (isolates DRM from capture)");
 
     try {
         program.parse_args(argc, argv);
@@ -340,6 +629,7 @@ int main(int argc, char *argv[]) {
     const int ae_interval = program.get<int>("--ae-interval");
     const bool enable_isp = program.get<bool>("--isp");
     const bool quiet_stats = program.get<bool>("--quiet-stats");
+    const bool test_mode = program.get<bool>("--test");
 
     if (!mode_arg.empty()) {
         const SensorMode *m = find_mode(mode_arg);
@@ -348,6 +638,13 @@ int main(int argc, char *argv[]) {
                 sensor_modes_str());
         width = m->width;
         height = m->height;
+    }
+
+    // --- DRM sanity mode (no camera) ----------------------------------------
+    if (test_mode) {
+        std::cout << "TEST MODE: DRM NV12 grayscale bars at native 1920x1080 "
+                     "(no camera/pipeline).\n";
+        return run_test_pattern(drm_dev, conn_name, width, height);
     }
     if (nbuf < 4)
         die("--buffers must be >= 4 (display holds up to 3 in flight)");
@@ -483,8 +780,14 @@ int main(int argc, char *argv[]) {
     if (drmSetMaster(d.fd) != 0)
         fail("drmSetMaster (is a compositor/other KMS client holding it?)");
     d.master = true;
+    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) != 0)
+        fail("drmSetClientCap UNIVERSAL_PLANES");
+    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_ATOMIC, 1) != 0)
+        fail("drmSetClientCap ATOMIC (driver lacks atomic modesetting?)");
 
     drm_pick_output(d, conn_name, gw, gh);
+    drm_pick_plane(d);
+    drm_cache_props(d);
     d.saved_crtc = drmModeGetCrtc(d.fd, d.crtc_id); // for restore on exit
     drm_make_chroma(d, gw, gh);
 
@@ -573,21 +876,28 @@ int main(int argc, char *argv[]) {
             fail("VIDIOC_QBUF (requeue)");
     };
 
-    // Schedule the newest ready buffer if the display is idle.
+    // Schedule the newest ready buffer if the display is idle. The first frame
+    // does a blocking atomic modeset; subsequent frames are non-blocking atomic
+    // plane flips that fire a page-flip event on scanout completion.
     auto try_schedule = [&]() {
         if (fb_pending != -1 || fb_ready == -1)
             return;
         if (!crtc_set) {
-            if (drmModeSetCrtc(d.fd, d.crtc_id, fb_id[fb_ready], 0, 0,
-                               &d.conn_id, 1, &d.mode) != 0)
-                fail("drmModeSetCrtc");
+            drm_atomic_modeset(d, fb_id[fb_ready]);
             crtc_set = true;
             fb_screen = fb_ready; // modeset is immediate, no flip event
             fb_ready = -1;
         } else {
-            if (drmModePageFlip(d.fd, d.crtc_id, fb_id[fb_ready],
-                                DRM_MODE_PAGE_FLIP_EVENT, &flip_done) != 0)
-                fail("drmModePageFlip");
+            drmModeAtomicReq *req = drmModeAtomicAlloc();
+            drmModeAtomicAddProperty(req, d.plane_id, d.pp.fb_id,
+                                     fb_id[fb_ready]);
+            int r = drmModeAtomicCommit(
+                d.fd, req,
+                DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+                &flip_done);
+            drmModeAtomicFree(req);
+            if (r != 0)
+                fail("drmModeAtomicCommit (flip)");
             fb_pending = fb_ready;
             fb_ready = -1;
         }
@@ -684,6 +994,12 @@ int main(int argc, char *argv[]) {
 
     if (xioctl(vfd, VIDIOC_STREAMOFF, &type_int) == -1)
         std::cerr << "warning: VIDIOC_STREAMOFF: " << strerror(errno) << "\n";
+
+    // Turn our overlay plane off so it stops covering the console.
+    if (d.plane_id)
+        drmModeSetPlane(d.fd, d.plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (d.mode_blob_id)
+        drmModeDestroyPropertyBlob(d.fd, d.mode_blob_id);
 
     // Restore the previous CRTC config so the console (fbcon) comes back.
     if (d.saved_crtc) {
