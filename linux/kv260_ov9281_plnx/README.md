@@ -287,11 +287,18 @@ with a list of what the connector supports.
 
 ```bash
 # run over serial/SSH, not the on-screen console (it owns the display via DRM master)
-mocap-hdmi-drm                          # default: 1280x720 on DP-1, zero-copy
-mocap-hdmi-drm --ae --isp               # AE with hardware ISP histogram
-mocap-hdmi-drm --fps 120                # higher frame rate
-mocap-hdmi-drm --connector DP-1 -b 6    # explicit connector, more buffers
+mocap-hdmi-drm --fps 90                  # ALWAYS pass an explicit --fps (see note)
+mocap-hdmi-drm --fps 60 --ae --isp       # AE with hardware ISP histogram
+mocap-hdmi-drm --fps 90 --connector DP-1 -b 6   # explicit connector, more buffers
 ```
+
+> **Known limitation — you must pass `--fps`.** Running at the default
+> unconstrained rate (`--fps max`, i.e. minimum VBLANK — ~144 fps at 1280x720)
+> overruns the capture pipeline: above roughly **100 fps** frames come in faster
+> than the software path sustains, and the display and auto-exposure misbehave.
+> Always pass an explicit `--fps <N>` at ~100 or below. This is also required for
+> **auto-exposure to converge** — AE only behaves correctly when the frame rate
+> is constrained with `--fps`; at the unconstrained default it does not settle.
 
 The app takes DRM master (suspending fbcon/the console while it runs) and
 restores the original CRTC on exit. It needs ≥4 V4L2 buffers (default 5) since

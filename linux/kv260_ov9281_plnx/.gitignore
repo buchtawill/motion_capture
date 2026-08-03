@@ -16,3 +16,5 @@ pre-built
 *.o
 *.jou
 *.log
+cross_build_out
+app_binaries

@@ -26,7 +26,7 @@ PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$PROJ/build/tmp"
 APPS_DIR="$PROJ/project-spec/meta-user/recipes-apps"
 NFS_BIN="$PROJ/../nfs-mount-point/usr/bin"           # NFS-root target /usr/bin
-OUT="$PROJ/cross_build_out"
+OUT="$PROJ/app_binaries"
 
 # Target tune (copied verbatim from the recipes' do_compile line).
 TUNE="-mcpu=cortex-a72.cortex-a53 -march=armv8-a+crc"
@@ -156,11 +156,13 @@ for app in "${APP_LIST[@]}"; do
             built+=("$app")
             printf '    -> %s\n' "$OUT/$app/$app"
             if [ "$DO_DEPLOY" = 1 ]; then
-                if [ -d "$NFS_BIN" ]; then
-                    sudo cp "$OUT/$app/$app" "$NFS_BIN/" && \
-                        printf '    deployed -> %s/%s\n' "$NFS_BIN" "$app"
-                else
+                if [ ! -d "$NFS_BIN" ]; then
                     echo "    (deploy skipped: $NFS_BIN not found)"
+                elif sudo cp "$OUT/$app/$app" "$NFS_BIN/"; then
+                    printf '    deployed -> %s/%s\n' "$NFS_BIN" "$app"
+                else
+                    echo "    DEPLOY FAILED (sudo needs a terminal? run this" \
+                         "script from an interactive shell)"
                 fi
             fi
         else
