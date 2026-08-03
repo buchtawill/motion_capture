@@ -1,25 +1,35 @@
-// mocap-hdmi-drm: zero-copy HDMI display for the KV260 OV9281 capture pipeline.
+// mocap-hdmi-drm: near-zero-copy HDMI display for the KV260 OV9281 pipeline.
 //
-// Successor to mocap-hdmi-memcp. Instead of a CPU copy into /dev/fb0, this
-// drives the same PS DisplayPort controller through DRM/KMS: each V4L2 capture
-// buffer is exported as a dmabuf and imported as an NV12 DRM framebuffer, then
-// page-flipped so the DisplayPort DMA scans the frame straight out of the
-// capture buffer -- no per-frame pixel copy.
+// The PS DisplayPort video layer on this SoC is fixed at the panel's native
+// 1920x1080: the driver rejects any other layer size ("Layer width:height must
+// be 1920:1080") and refuses to modeset the CRTC to a smaller mode. The OV9281
+// only does <=1280x800, so a 1:1 full-screen buffer is impossible. Instead we
+// invert the usual V4L2->DRM buffer ownership:
 //
-// Grayscale-on-a-YUV-plane trick: the DP scanout plane has no mono format but
-// it does have a hardware CSC. So each frame is presented as semi-planar NV12
-// where the luma plane IS the Y8 capture buffer (zero-copy) and the chroma
-// plane is a single shared buffer filled with 0x80 (neutral chroma). The DP
-// hardware converts Y + neutral chroma into grayscale RGB during scanout.
+//   * DRM allocates a ring of 1920x1080 NV12 luma buffers (dumb buffers) and
+//     exports each as a dma-buf.
+//   * V4L2 imports those dma-bufs (VB2_DMABUF) and the capture DMA writes each
+//     sensor line straight into the TOP-LEFT of a 1080p buffer, using an
+//     oversized bytesperline (= the 1920-wide luma stride) as its hardware
+//     stride. The buffer is pre-cleared to 0, so everything outside the (smaller)
+//     camera image scans out as a black letterbox.
+//   * The sensor DMA writes the frame and the DisplayPort DMA scans the SAME
+//     buffer out -- no per-frame CPU copy of pixel data.
+//
+// Grayscale-on-NV12 trick (unchanged): the luma plane carries the Y8 image and a
+// single shared chroma buffer is filled with 0x80 (neutral). The DP hardware CSC
+// turns Y + neutral chroma into grayscale RGB during scanout.
+//
+// The video layer is composited UNDER the graphics (primary) layer, whose global
+// alpha defaults to opaque; we set the primary plane's "alpha" to 0 so the video
+// shows through (see drm_cache_props / zynqmp_disp.c).
 //
 // Single-threaded: one poll() loop services both the V4L2 fd (new frames) and
-// the DRM fd (page-flip completions), so buffer ownership is race-free. Frames
-// are dropped whenever the display can't keep up -- only the newest dequeued
-// buffer is ever scheduled, which is what keeps end-to-end lag low.
-//
-// No scaler exists in this path, so the chosen display mode must exactly match
-// the capture resolution (default 1280x720 is both a sensor mode and a DP-1
-// mode). A future mocap-hdmi-dma could add PL scaling / CSC.
+// the DRM fd (page-flip completions), so buffer ownership is race-free. Only the
+// newest dequeued buffer is ever scheduled, dropping stale frames to keep lag
+// low. Auto-exposure reads the luma buffer through DMA_BUF_IOCTL_SYNC so the CPU
+// sees the DMA-written pixels coherently (a cached, unsynced read reports mean
+// ~0 and pins AE).
 
 #include <algorithm>
 #include <atomic>
@@ -41,7 +51,9 @@
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
 
+#include <linux/dma-buf.h>
 #include <linux/videodev2.h>
+#include <sys/ioctl.h>
 
 #include <mocap/argparse.hpp>
 #include <mocap/auto_exposure.hpp>
@@ -55,6 +67,17 @@ using namespace mocap;
 static std::atomic<bool> g_quit{false};
 
 static void on_signal(int) { g_quit = true; }
+
+// Bracket a CPU read of a dma-buf so the kernel makes the DMA-written bytes
+// coherent for the CPU (invalidate on START, no-op on END for a read). The
+// luma buffers are written by the capture DMA; without this the CPU may read a
+// stale cached view (near-zero) and auto-exposure never converges. Best-effort:
+// if the driver's exporter doesn't implement sync, the ioctl fails harmlessly.
+static void dmabuf_sync_read(int fd, bool start) {
+    dma_buf_sync s{};
+    s.flags = (start ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) | DMA_BUF_SYNC_READ;
+    ioctl(fd, DMA_BUF_IOCTL_SYNC, &s);
+}
 
 // --- DRM display state ------------------------------------------------------
 
@@ -283,6 +306,61 @@ static void drm_make_chroma(DrmDisplay &d, unsigned w, unsigned h) {
         fail("mmap chroma");
     d.chroma_map = static_cast<uint8_t *>(m);
     std::memset(d.chroma_map, 0x80, d.chroma_size); // neutral U=V=128
+}
+
+// One 1920x1080 NV12 "frame slot" for the live path: a luma dumb buffer that the
+// sensor VDMA writes into (exported as a dma-buf for V4L2 to import), paired with
+// the shared constant-chroma buffer into an NV12 scanout framebuffer. The luma
+// buffer is CPU-mapped (so AE can read it) and pre-cleared to 0 so the border
+// around the smaller camera image scans out black. Fills the out-params.
+struct LumaSlot {
+    uint32_t handle = 0;
+    uint8_t *map = nullptr;
+    size_t size = 0;
+    uint32_t pitch = 0;
+    int dmabuf_fd = -1;
+    uint32_t fb_id = 0;
+};
+
+static LumaSlot drm_make_luma_slot(DrmDisplay &d, unsigned w, unsigned h) {
+    LumaSlot s;
+    drm_mode_create_dumb creq{};
+    creq.width = w;
+    creq.height = h;
+    creq.bpp = 8;
+    if (drmIoctl(d.fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) != 0)
+        fail("DRM_IOCTL_MODE_CREATE_DUMB (luma slot)");
+    s.handle = creq.handle;
+    s.pitch = creq.pitch;
+    s.size = creq.size;
+
+    drm_mode_map_dumb mreq{};
+    mreq.handle = s.handle;
+    if (drmIoctl(d.fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) != 0)
+        fail("DRM_IOCTL_MODE_MAP_DUMB (luma slot)");
+    void *m = mmap(nullptr, s.size, PROT_READ | PROT_WRITE, MAP_SHARED, d.fd,
+                   mreq.offset);
+    if (m == MAP_FAILED)
+        fail("mmap luma slot");
+    s.map = static_cast<uint8_t *>(m);
+    std::memset(s.map, 0, s.size); // black letterbox around the camera image
+
+    // Export for V4L2 to import and DMA into (needs read+write access).
+    if (drmPrimeHandleToFD(d.fd, s.handle, DRM_CLOEXEC | DRM_RDWR,
+                           &s.dmabuf_fd) != 0)
+        fail("drmPrimeHandleToFD (luma slot)");
+
+    uint32_t handles[4] = {s.handle, d.chroma_handle, 0, 0};
+    uint32_t pitches[4] = {s.pitch, d.chroma_stride, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(d.fd, w, h, DRM_FORMAT_NV12, handles, pitches, offsets,
+                      &s.fb_id, 0) != 0) {
+        std::cerr << prog_name() << ": drmModeAddFB2 NV12 (luma slot) failed: "
+                  << strerror(errno) << "\n";
+        drm_dump_primary_formats(d);
+        die("cannot create NV12 scanout framebuffer");
+    }
+    return s;
 }
 
 // Pick the scanout plane. NV12 is only offered on an OVERLAY plane on this DP
@@ -533,7 +611,7 @@ int main(int argc, char *argv[]) {
     program.add_argument("--mode")
         .default_value(std::string("1280x720"))
         .help("capture mode (sets width/height): " + sensor_modes_str() +
-              ". Must have a matching display mode (no scaler)");
+              ". Displayed top-left in a 1920x1080 black letterbox (no scaler)");
     program.add_argument("-W", "--width")
         .default_value(1280u)
         .scan<'u', unsigned>()
@@ -681,7 +759,39 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // --- V4L2 capture -------------------------------------------------------
+    // --- DRM open + output + 1080p NV12 luma ring ---------------------------
+    //
+    // Open DRM first: the DP video layer is locked to the panel's native size,
+    // so we allocate the 1920x1080 luma ring here and hand its dma-bufs to V4L2
+    // to DMA into. DISP_W/H is the fixed scanout size; the camera writes a
+    // smaller region into the top-left.
+    constexpr unsigned DISP_W = 1920, DISP_H = 1080;
+
+    DrmDisplay d;
+    d.fd = open(drm_dev.c_str(), O_RDWR | O_CLOEXEC);
+    if (d.fd == -1)
+        fail("open " + drm_dev);
+    if (drmSetMaster(d.fd) != 0)
+        fail("drmSetMaster (is a compositor/other KMS client holding it?)");
+    d.master = true;
+    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) != 0)
+        fail("drmSetClientCap UNIVERSAL_PLANES");
+    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_ATOMIC, 1) != 0)
+        fail("drmSetClientCap ATOMIC (driver lacks atomic modesetting?)");
+
+    drm_pick_output(d, conn_name, DISP_W, DISP_H);
+    drm_pick_plane(d);
+    drm_cache_props(d);
+    d.saved_crtc = drmModeGetCrtc(d.fd, d.crtc_id); // for restore on exit
+    drm_make_chroma(d, DISP_W, DISP_H);
+
+    // The frame ring: nbuf luma buffers (each pre-cleared, exported for V4L2).
+    std::vector<LumaSlot> slot(nbuf);
+    for (unsigned i = 0; i < nbuf; ++i)
+        slot[i] = drm_make_luma_slot(d, DISP_W, DISP_H);
+    const uint32_t luma_stride = slot[0].pitch; // hardware stride for V4L2
+
+    // --- V4L2 capture (imports the DRM luma dma-bufs) -----------------------
 
     int vfd = open(device.c_str(), O_RDWR, 0);
     if (vfd == -1)
@@ -694,6 +804,9 @@ int main(int argc, char *argv[]) {
     const auto buf_type = mplane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
                                  : V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
+    // Force the capture stride to the 1920-wide luma pitch so the DMA writes
+    // each sensor line into the top-left of the 1080p buffer (the interleaved
+    // DMA's inter-line gap = stride - line bytes leaves the right side black).
     v4l2_format fmt{};
     fmt.type = buf_type;
     if (mplane) {
@@ -702,11 +815,15 @@ int main(int argc, char *argv[]) {
         fmt.fmt.pix_mp.pixelformat = pixfmt;
         fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
         fmt.fmt.pix_mp.num_planes = 1;
+        fmt.fmt.pix_mp.plane_fmt[0].bytesperline = luma_stride;
+        fmt.fmt.pix_mp.plane_fmt[0].sizeimage = luma_stride * height;
     } else {
         fmt.fmt.pix.width = width;
         fmt.fmt.pix.height = height;
         fmt.fmt.pix.pixelformat = pixfmt;
         fmt.fmt.pix.field = V4L2_FIELD_NONE;
+        fmt.fmt.pix.bytesperline = luma_stride;
+        fmt.fmt.pix.sizeimage = luma_stride * height;
     }
     if (xioctl(vfd, VIDIOC_S_FMT, &fmt) == -1)
         fail("VIDIOC_S_FMT");
@@ -721,96 +838,55 @@ int main(int argc, char *argv[]) {
 
     if (got_pixfmt != V4L2_PIX_FMT_GREY)
         die("driver did not accept GREY (got '" + fourcc_str(got_pixfmt) + "')");
+    if (gw > DISP_W || gh > DISP_H)
+        die("capture " + std::to_string(gw) + "x" + std::to_string(gh) +
+            " exceeds the " + std::to_string(DISP_W) + "x" +
+            std::to_string(DISP_H) + " scanout buffer");
+    // The DMA stride must match the luma buffer pitch exactly or the image
+    // shears; the driver may round bytesperline to its own alignment.
+    if (bpl != luma_stride)
+        die("driver forced stride " + std::to_string(bpl) + " != luma pitch " +
+            std::to_string(luma_stride) + " (stride-alignment mismatch)");
 
     std::cout << "Capture: " << gw << "x" << gh << " '" << fourcc_str(got_pixfmt)
-              << "' stride " << bpl << (mplane ? " [mplane]" : "") << "\n";
+              << "' into " << DISP_W << "x" << DISP_H << " top-left, stride "
+              << bpl << (mplane ? " [mplane]" : "") << "\n";
 
-    // --- request + mmap + export V4L2 buffers -------------------------------
+    // --- request buffers (DMABUF import) + queue the luma dma-bufs ----------
 
     v4l2_requestbuffers req{};
     req.count = nbuf;
     req.type = buf_type;
-    req.memory = V4L2_MEMORY_MMAP;
+    req.memory = V4L2_MEMORY_DMABUF;
     if (xioctl(vfd, VIDIOC_REQBUFS, &req) == -1)
-        fail("VIDIOC_REQBUFS");
-    if (req.count < 4)
-        die("got fewer than 4 V4L2 buffers");
+        fail("VIDIOC_REQBUFS (DMABUF import; does this driver support it?)");
+    if (req.count < nbuf)
+        die("driver gave " + std::to_string(req.count) +
+            " DMABUF slots, fewer than the " + std::to_string(nbuf) +
+            " luma buffers");
 
-    std::vector<MappedPlane> cpu(req.count);  // CPU map (for AE)
-    std::vector<int> dmabuf_fd(req.count, -1); // exported dmabuf per buffer
-    for (unsigned i = 0; i < req.count; ++i) {
-        v4l2_buffer buf{};
-        v4l2_plane planes[VIDEO_MAX_PLANES]{};
-        buf.type = buf_type;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
+    // Queue a slot's luma dma-buf back to the capture DMA (also used to requeue
+    // a buffer once it is no longer on screen).
+    auto qbuf = [&](int i) {
+        v4l2_buffer b{};
+        v4l2_plane pl[VIDEO_MAX_PLANES]{};
+        b.type = buf_type;
+        b.memory = V4L2_MEMORY_DMABUF;
+        b.index = static_cast<uint32_t>(i);
         if (mplane) {
-            buf.length = n_planes;
-            buf.m.planes = planes;
+            b.length = n_planes;
+            b.m.planes = pl;
+            pl[0].m.fd = slot[i].dmabuf_fd;
+            pl[0].length = slot[i].size;
+        } else {
+            b.m.fd = slot[i].dmabuf_fd;
+            b.length = slot[i].size;
         }
-        if (xioctl(vfd, VIDIOC_QUERYBUF, &buf) == -1)
-            fail("VIDIOC_QUERYBUF");
-        const size_t len = mplane ? planes[0].length : buf.length;
-        const off_t off = mplane ? planes[0].m.mem_offset : buf.m.offset;
-        void *m = mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, vfd,
-                       off);
-        if (m == MAP_FAILED)
-            fail("mmap v4l2 buffer");
-        cpu[i] = {m, len};
-
-        v4l2_exportbuffer expbuf{};
-        expbuf.type = buf_type;
-        expbuf.index = i;
-        expbuf.plane = 0;
-        expbuf.flags = O_RDONLY | O_CLOEXEC;
-        if (xioctl(vfd, VIDIOC_EXPBUF, &expbuf) == -1)
-            fail("VIDIOC_EXPBUF");
-        dmabuf_fd[i] = expbuf.fd;
-
-        if (xioctl(vfd, VIDIOC_QBUF, &buf) == -1)
-            fail("VIDIOC_QBUF");
-    }
-
-    // --- DRM open + output selection ----------------------------------------
-
-    DrmDisplay d;
-    d.fd = open(drm_dev.c_str(), O_RDWR | O_CLOEXEC);
-    if (d.fd == -1)
-        fail("open " + drm_dev);
-    if (drmSetMaster(d.fd) != 0)
-        fail("drmSetMaster (is a compositor/other KMS client holding it?)");
-    d.master = true;
-    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) != 0)
-        fail("drmSetClientCap UNIVERSAL_PLANES");
-    if (drmSetClientCap(d.fd, DRM_CLIENT_CAP_ATOMIC, 1) != 0)
-        fail("drmSetClientCap ATOMIC (driver lacks atomic modesetting?)");
-
-    drm_pick_output(d, conn_name, gw, gh);
-    drm_pick_plane(d);
-    drm_cache_props(d);
-    d.saved_crtc = drmModeGetCrtc(d.fd, d.crtc_id); // for restore on exit
-    drm_make_chroma(d, gw, gh);
-
-    // Import each dmabuf and build an NV12 framebuffer: luma = capture buffer,
-    // chroma = the shared constant-0x80 buffer.
-    std::vector<uint32_t> fb_id(req.count, 0);
-    for (unsigned i = 0; i < req.count; ++i) {
-        uint32_t luma_handle = 0;
-        if (drmPrimeFDToHandle(d.fd, dmabuf_fd[i], &luma_handle) != 0)
-            fail("drmPrimeFDToHandle");
-        uint32_t handles[4] = {luma_handle, d.chroma_handle, 0, 0};
-        uint32_t pitches[4] = {bpl, d.chroma_stride, 0, 0};
-        uint32_t offsets[4] = {0, 0, 0, 0};
-        if (drmModeAddFB2(d.fd, gw, gh, DRM_FORMAT_NV12, handles, pitches,
-                          offsets, &fb_id[i], 0) != 0) {
-            std::cerr << prog_name()
-                      << ": drmModeAddFB2 NV12 failed: " << strerror(errno)
-                      << "\n  the DP plane likely does not support NV12. "
-                         "CRTC plane formats:\n";
-            drm_dump_primary_formats(d);
-            die("cannot create NV12 scanout framebuffer");
-        }
-    }
+        if (xioctl(vfd, VIDIOC_QBUF, &b) == -1)
+            fail("VIDIOC_QBUF (DMABUF)");
+    };
+    for (unsigned i = 0; i < nbuf; ++i)
+        qbuf(static_cast<int>(i));
 
     int type_int = buf_type;
     if (xioctl(vfd, VIDIOC_STREAMON, &type_int) == -1)
@@ -862,20 +938,6 @@ int main(int argc, char *argv[]) {
     bool crtc_set = false;
     bool flip_done = false; // set by the page-flip handler on completion
 
-    auto qbuf = [&](int idx) {
-        v4l2_buffer b{};
-        v4l2_plane pl[VIDEO_MAX_PLANES]{};
-        b.type = buf_type;
-        b.memory = V4L2_MEMORY_MMAP;
-        b.index = static_cast<uint32_t>(idx);
-        if (mplane) {
-            b.length = n_planes;
-            b.m.planes = pl;
-        }
-        if (xioctl(vfd, VIDIOC_QBUF, &b) == -1)
-            fail("VIDIOC_QBUF (requeue)");
-    };
-
     // Schedule the newest ready buffer if the display is idle. The first frame
     // does a blocking atomic modeset; subsequent frames are non-blocking atomic
     // plane flips that fire a page-flip event on scanout completion.
@@ -883,14 +945,14 @@ int main(int argc, char *argv[]) {
         if (fb_pending != -1 || fb_ready == -1)
             return;
         if (!crtc_set) {
-            drm_atomic_modeset(d, fb_id[fb_ready]);
+            drm_atomic_modeset(d, slot[fb_ready].fb_id);
             crtc_set = true;
             fb_screen = fb_ready; // modeset is immediate, no flip event
             fb_ready = -1;
         } else {
             drmModeAtomicReq *req = drmModeAtomicAlloc();
             drmModeAtomicAddProperty(req, d.plane_id, d.pp.fb_id,
-                                     fb_id[fb_ready]);
+                                     slot[fb_ready].fb_id);
             int r = drmModeAtomicCommit(
                 d.fd, req,
                 DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
@@ -946,7 +1008,7 @@ int main(int argc, char *argv[]) {
             v4l2_buffer buf{};
             v4l2_plane planes[VIDEO_MAX_PLANES]{};
             buf.type = buf_type;
-            buf.memory = V4L2_MEMORY_MMAP;
+            buf.memory = V4L2_MEMORY_DMABUF;
             if (mplane) {
                 buf.length = n_planes;
                 buf.m.planes = planes;
@@ -961,9 +1023,13 @@ int main(int argc, char *argv[]) {
                 qbuf(buf.index);
             } else {
                 ++captured;
-                if (ae)
-                    ae->update(static_cast<const uint8_t *>(cpu[buf.index].start),
-                               gw, gh, bpl);
+                if (ae) {
+                    // Read the DMA-written luma coherently (a cached, unsynced
+                    // read reports mean ~0 and pins AE). gw x gh top-left region.
+                    dmabuf_sync_read(slot[buf.index].dmabuf_fd, true);
+                    ae->update(slot[buf.index].map, gw, gh, luma_stride);
+                    dmabuf_sync_read(slot[buf.index].dmabuf_fd, false);
+                }
                 // Keep only the newest ready buffer; drop the previous one.
                 if (fb_ready != -1)
                     qbuf(fb_ready);
@@ -982,7 +1048,31 @@ int main(int argc, char *argv[]) {
                 const uint64_t dropped = dc > dd ? dc - dd : 0;
                 std::cout << "displayed " << (dd / elapsed) << " fps, dropped "
                           << dropped << " of " << dc << " captured in "
-                          << elapsed << "s\n";
+                          << elapsed << "s";
+                // Luma diagnostic on the on-screen buffer (we own it, so it is
+                // not being overwritten): subsampled min/mean/max. This tells
+                // "dark" (low values) from "inverted" (a normal-looking mean but
+                // reversed) without a host round-trip.
+                if (fb_screen >= 0) {
+                    const uint8_t *base = slot[fb_screen].map;
+                    dmabuf_sync_read(slot[fb_screen].dmabuf_fd, true);
+                    unsigned lo = 255, hi = 0;
+                    uint64_t sum = 0, cnt = 0;
+                    for (unsigned y = 0; y < gh; y += 8) {
+                        const uint8_t *r = base + size_t(y) * luma_stride;
+                        for (unsigned x = 0; x < gw; x += 8) {
+                            uint8_t v = r[x];
+                            lo = v < lo ? v : lo;
+                            hi = v > hi ? v : hi;
+                            sum += v;
+                            ++cnt;
+                        }
+                    }
+                    dmabuf_sync_read(slot[fb_screen].dmabuf_fd, false);
+                    std::cout << "  luma[min/mean/max]=" << lo << "/"
+                              << (cnt ? sum / cnt : 0) << "/" << hi;
+                }
+                std::cout << "\n";
                 last_captured = captured;
                 last_displayed = displayed;
                 last_report = now;
@@ -1008,13 +1098,18 @@ int main(int argc, char *argv[]) {
                        &d.saved_crtc->mode);
         drmModeFreeCrtc(d.saved_crtc);
     }
-    for (unsigned i = 0; i < req.count; ++i) {
-        if (fb_id[i])
-            drmModeRmFB(d.fd, fb_id[i]);
-        if (dmabuf_fd[i] >= 0)
-            close(dmabuf_fd[i]);
-        if (cpu[i].start)
-            munmap(cpu[i].start, cpu[i].length);
+    for (unsigned i = 0; i < nbuf; ++i) {
+        if (slot[i].fb_id)
+            drmModeRmFB(d.fd, slot[i].fb_id);
+        if (slot[i].dmabuf_fd >= 0)
+            close(slot[i].dmabuf_fd);
+        if (slot[i].map)
+            munmap(slot[i].map, slot[i].size);
+        if (slot[i].handle) {
+            drm_mode_destroy_dumb dreq{};
+            dreq.handle = slot[i].handle;
+            drmIoctl(d.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+        }
     }
     if (d.chroma_map)
         munmap(d.chroma_map, d.chroma_size);
