@@ -1,0 +1,283 @@
+// mocap_regs.rdl
+// KV260 / OV9281 motion-capture wrapper (mocap_wrapper) AXI4-Lite register map.
+//
+// mocap_wrapper fuses the 256-bin ISP histogram and the RLE blob detector behind
+// a single register file and a race-free, hardware-owned double-buffered result
+// store. Both engines are reused unmodified; all banking / ownership lives in the
+// wrapper. See motion_capture/agents/PLAN_new_hw_pipeline.md for the architecture.
+//
+// Ownership protocol (race-free HW/SW handoff):
+//   - HW free-runs (continuous) while CTRL.ENABLE = 1.
+//   - On each completed frame HW publishes one coherent buffer
+//     { histogram[256], blob table, FRAME_ID, PIXEL_SUM, BLOB_COUNT } and raises
+//     the interrupt (STATUS.FRAME_DONE_IRQ). STATUS.READ_BANK says which bank.
+//   - SW reads the published buffer, then pulses CTRL.RESULTS_ACK, which clears
+//     the interrupt AND releases the buffer back to HW.
+//   - If SW has not ACKed before the next frame completes, HW keeps the latest
+//     frame in the non-SW buffer (SW's buffer is never touched) and increments
+//     DROPPED_FRAMES.
+//
+// Pixel path is 8-bit, 4 pixels/beat. Histogram has 256 bins of up to 20-bit
+// count. Up to MAX_BLOBS blobs are tracked per frame.
+//
+// Register summary (each register occupies 4 bytes of address space):
+//   0x00  CTRL            R/W   Control (W-pulses + ENABLE + AUTOINC + THRESHOLD)
+//   0x04  STATUS          RO    HW-driven status + published BLOB_COUNT
+//   0x08  HRES            R/W   Horizontal resolution (16b, default 640)
+//   0x0C  VRES            R/W   Vertical resolution   (16b, default 400)
+//   0x10  FRAME_ID        RO    Monotonic id of the published buffer
+//   0x14  DROPPED_FRAMES  RO    Frames dropped by keep-latest overrun
+//   0x18  PIXEL_SUM       RO    Sum of pixel values for the published frame
+//   0x20  HIST_ADDR       R/W   Histogram bin index (8b), HW-writable for autoinc
+//   0x24  HIST_DATA       RO    Histogram bin count (20b) at HIST_ADDR (read_bank)
+//   0x28  BLOB_ADDR       R/W   Blob table read index (8b), HW-writable for autoinc
+//   0x2C  BLOB_COUNT_RD   RO    Pixel count for blob at BLOB_ADDR (32b)
+//   0x30  BLOB_SX         RO    Sum of X coords for blob at BLOB_ADDR (32b)
+//   0x34  BLOB_SY         RO    Sum of Y coords for blob at BLOB_ADDR (32b)
+//   0x38  BLOB_XMIN       RO    Bounding box min X (16b)
+//   0x3C  BLOB_XMAX       RO    Bounding box max X (16b)
+//   0x40  BLOB_YMIN       RO    Bounding box min Y (16b)
+//   0x44  BLOB_YMAX       RO    Bounding box max Y (16b)
+//   0x48  MAX_BLOBS_CFG   RO    Reports MAX_BLOBS parameter to SW (16b)
+//   0x50  DMA_BASE_LO     R/W   RESERVED for Arch #2 (DMA streaming)
+//   0x54  DMA_BASE_HI     R/W   RESERVED for Arch #2
+//   0x58  DMA_LEN         R/W   RESERVED for Arch #2
+//   0x5C  DMA_CTRL        R/W   RESERVED for Arch #2
+//
+// A SW reset (CTRL.RESET = 1) clears all counters, buffers, status flags, and
+// DROPPED_FRAMES; it does NOT reset HRES, VRES, CTRL.THRESHOLD, or the AUTOINC
+// bits. Blob field order (BLOB_COUNT_RD, BLOB_SX, BLOB_SY, BLOB_XMIN, BLOB_XMAX,
+// BLOB_YMIN, BLOB_YMAX) matches the model/compare.py golden layout.
+
+addrmap mocap_regs {
+    desc = "KV260 motion-capture wrapper AXI4-Lite register map: double-buffered
+            256-bin histogram + RLE blob detection with a race-free IRQ/ACK
+            ownership protocol. 8-bit pixels; up to MAX_BLOBS blobs per frame.";
+
+    // =========================================================
+    // 0x00: Control
+    //  - RESET, RESULTS_ACK are write-only single-pulse (auto-clear)
+    //  - ENABLE, *_AUTOINC, THRESHOLD are sticky R/W
+    // =========================================================
+    reg ctrl_reg {
+        desc = "mocap_wrapper control register.";
+
+        field { hw = r; sw = w; singlepulse; } RESET[1] = 0;
+        // Bit 0: SW reset. Clears counters, buffers, status flags, FRAME_ID and
+        //        DROPPED_FRAMES. Does NOT reset HRES/VRES/THRESHOLD/AUTOINC.
+
+        field { hw = r; sw = rw; } ENABLE[1] = 0;
+        // Bit 1: Enable continuous capture. While 1, HW free-runs: each completed
+        //        frame publishes a buffer and raises the interrupt. While 0, HW
+        //        returns to idle (READY) after the current frame.
+
+        field { hw = r; sw = w; singlepulse; } RESULTS_ACK[1] = 0;
+        // Bit 2: Acknowledge/consume the published buffer. Clears
+        //        STATUS.FRAME_DONE_IRQ AND releases the SW-held buffer back to HW.
+
+        field { hw = r; sw = rw; } HIST_ADDR_AUTOINC[1] = 1;
+        // Bit 3: When 1, HIST_ADDR auto-increments (wrap at 0xFF) after each
+        //        HIST_DATA read. Defaults to 1.
+
+        field { hw = r; sw = rw; } BLOB_ADDR_AUTOINC[1] = 1;
+        // Bit 4: When 1, BLOB_ADDR auto-increments (wrap at MAX_BLOBS-1) after
+        //        each blob-field read. Defaults to 1.
+
+        field { hw = r; sw = rw; } THRESHOLD[15:8] = 8'd128;
+        // Bits [15:8]: Pixel threshold for blob foreground (pixel >= THRESHOLD).
+        //        Preserved across SW reset.
+    };
+
+    // =========================================================
+    // 0x04: Status (RO, HW-driven)
+    // =========================================================
+    reg status_reg {
+        desc = "mocap_wrapper status register (RO).";
+
+        default hw = w;
+        default sw = r;
+
+        field {} READY[1]          = 0;
+        // Bit 0: 1 when idle/ready (not currently capturing). Informational in
+        //        continuous mode.
+
+        field {} RESULTS_VALID[1]  = 0;
+        // Bit 1: 1 when a published buffer is available for SW to read.
+        //        Set at publish, cleared by RESULTS_ACK / RESET.
+
+        field {} FRAME_DONE_IRQ[1] = 0;
+        // Bit 2: Latched interrupt. Set at publish (isp_done & blob_done).
+        //        Drives frame_done_irq_o. Cleared by CTRL.RESULTS_ACK / RESET.
+
+        field {} READ_BANK[1]      = 0;
+        // Bit 3: Which bank (0/1) currently holds the published buffer that
+        //        HIST_DATA / BLOB_* read from.
+
+        field {} HIST_FIFO_ERR[1]  = 0;
+        // Bit 4: Sticky. Histogram ingress FIFO overflow. Cleared only by RESET.
+
+        field {} BLOB_OVERFLOW[1]  = 0;
+        // Bit 5: Sticky. More than MAX_BLOBS blobs in a frame; extras dropped.
+        //        Cleared only by RESET.
+
+        field {} OVERRUN[1]        = 0;
+        // Bit 6: Sticky. At least one frame was dropped because SW had not ACKed
+        //        (see DROPPED_FRAMES). Cleared only by RESET.
+
+        field {} BLOB_COUNT[15:8]  = 0;
+        // Bits [15:8]: Number of blobs in the published buffer.
+    };
+
+    // =========================================================
+    // 0x08 / 0x0C: Resolution (R/W, preserved across SW reset)
+    // =========================================================
+    reg hres_reg {
+        desc = "Horizontal resolution in pixels (multiple of 4). Preserved across
+                SW reset.";
+        field { hw = r; sw = rw; } HRES[16] = 16'd640;
+    };
+    reg vres_reg {
+        desc = "Vertical resolution in lines. Preserved across SW reset.";
+        field { hw = r; sw = rw; } VRES[16] = 16'd400;
+    };
+
+    // =========================================================
+    // 0x10: Published frame id (RO) — monotonic; doubles as frame count
+    // =========================================================
+    reg frame_id_reg {
+        desc = "Monotonic id of the currently published buffer. Read at the start
+                and end of a buffer drain; if unchanged the read is coherent.";
+        field { hw = w; sw = r; } FRAME_ID[32] = 0;
+    };
+
+    // =========================================================
+    // 0x14: Dropped frame counter (RO)
+    // =========================================================
+    reg dropped_frames_reg {
+        desc = "Number of completed frames HW could not publish because SW had not
+                yet ACKed the previous buffer (keep-latest overrun). Also latches
+                STATUS.OVERRUN. Reset by CTRL.RESET.";
+        field { hw = w; sw = r; } DROPPED_FRAMES[32] = 0;
+    };
+
+    // =========================================================
+    // 0x18: Pixel sum for the published frame (RO)
+    // =========================================================
+    reg pixel_sum_reg {
+        desc = "Sum of all pixel values for the published frame. Matches
+                sum(hist_bin[i] * i). 32 bits covers 8-bit 1280x800.";
+        field { hw = w; sw = r; } PIXEL_SUM[32] = 0;
+    };
+
+    // =========================================================
+    // 0x20 / 0x24: Histogram indirect access (reads published read_bank)
+    // =========================================================
+    reg hist_addr_reg {
+        desc = "Histogram bin index. Auto-increments (wrap at 0xFF) on each
+                HIST_DATA read when CTRL.HIST_ADDR_AUTOINC = 1. Bits [31:8]
+                reserved.";
+        field { hw = rw; sw = rw; we; } HIST_ADDR[8] = 0;
+    };
+    reg hist_data_reg {
+        desc = "Histogram bin count at HIST_ADDR, from the published read_bank
+                instance. Bits [31:20] reserved.";
+        field { hw = w; sw = r; } HIST_DATA[20] = 0;
+    };
+
+    // =========================================================
+    // 0x28: Blob table read index (R/W, HW-writable for autoinc)
+    // =========================================================
+    reg blob_addr_reg {
+        desc = "Blob table read index into the published read_bank buffer. Auto-
+                increments (wrap at MAX_BLOBS-1) on each blob-field read when
+                CTRL.BLOB_ADDR_AUTOINC = 1. Bits [31:8] reserved.";
+        field { hw = rw; sw = rw; we; } BLOB_ADDR[8] = 0;
+    };
+
+    // =========================================================
+    // 0x2C..0x44: Blob descriptor fields (RO). Order matches compare.py golden.
+    // =========================================================
+    reg blob_count_rd_reg {
+        desc = "Pixel count for the blob at BLOB_ADDR (published buffer).";
+        field { hw = w; sw = r; } BLOB_COUNT_RD[32] = 0;
+    };
+    reg blob_sx_reg {
+        desc = "Sum of X coords for the blob at BLOB_ADDR. Centroid X = SX / count.";
+        field { hw = w; sw = r; } BLOB_SX[32] = 0;
+    };
+    reg blob_sy_reg {
+        desc = "Sum of Y coords for the blob at BLOB_ADDR. Centroid Y = SY / count.";
+        field { hw = w; sw = r; } BLOB_SY[32] = 0;
+    };
+    reg blob_xmin_reg {
+        desc = "Bounding box min X for the blob at BLOB_ADDR. Bits [31:16] reserved.";
+        field { hw = w; sw = r; } BLOB_XMIN[16] = 0;
+    };
+    reg blob_xmax_reg {
+        desc = "Bounding box max X for the blob at BLOB_ADDR. Bits [31:16] reserved.";
+        field { hw = w; sw = r; } BLOB_XMAX[16] = 0;
+    };
+    reg blob_ymin_reg {
+        desc = "Bounding box min Y for the blob at BLOB_ADDR. Bits [31:16] reserved.";
+        field { hw = w; sw = r; } BLOB_YMIN[16] = 0;
+    };
+    reg blob_ymax_reg {
+        desc = "Bounding box max Y for the blob at BLOB_ADDR. Bits [31:16] reserved.";
+        field { hw = w; sw = r; } BLOB_YMAX[16] = 0;
+    };
+
+    // =========================================================
+    // 0x48: MAX_BLOBS configuration readback (RO)
+    // =========================================================
+    reg max_blobs_cfg_reg {
+        desc = "Reports the MAX_BLOBS HDL parameter so the driver knows the valid
+                BLOB_ADDR range. Bits [31:16] reserved.";
+        field { hw = w; sw = r; } MAX_BLOBS_CFG[16] = 0;
+    };
+
+    // =========================================================
+    // 0x50..0x5C: RESERVED for Arch #2 (DMA streaming). R/W storage now, unused.
+    // =========================================================
+    reg dma_base_lo_reg {
+        desc = "RESERVED (Arch #2): DMA destination base address, low 32b.";
+        field { hw = r; sw = rw; } DMA_BASE_LO[32] = 0;
+    };
+    reg dma_base_hi_reg {
+        desc = "RESERVED (Arch #2): DMA destination base address, high 32b.";
+        field { hw = r; sw = rw; } DMA_BASE_HI[32] = 0;
+    };
+    reg dma_len_reg {
+        desc = "RESERVED (Arch #2): DMA record length in bytes.";
+        field { hw = r; sw = rw; } DMA_LEN[32] = 0;
+    };
+    reg dma_ctrl_reg {
+        desc = "RESERVED (Arch #2): DMA control.";
+        field { hw = r; sw = rw; } DMA_CTRL[32] = 0;
+    };
+
+    // =========================================================
+    // Address Map
+    // =========================================================
+    ctrl_reg           CTRL           @ 0x000;
+    status_reg         STATUS         @ 0x004;
+    hres_reg           HRES           @ 0x008;
+    vres_reg           VRES           @ 0x00C;
+    frame_id_reg       FRAME_ID       @ 0x010;
+    dropped_frames_reg DROPPED_FRAMES @ 0x014;
+    pixel_sum_reg      PIXEL_SUM      @ 0x018;
+    hist_addr_reg      HIST_ADDR      @ 0x020;
+    hist_data_reg      HIST_DATA      @ 0x024;
+    blob_addr_reg      BLOB_ADDR      @ 0x028;
+    blob_count_rd_reg  BLOB_COUNT_RD  @ 0x02C;
+    blob_sx_reg        BLOB_SX        @ 0x030;
+    blob_sy_reg        BLOB_SY        @ 0x034;
+    blob_xmin_reg      BLOB_XMIN      @ 0x038;
+    blob_xmax_reg      BLOB_XMAX      @ 0x03C;
+    blob_ymin_reg      BLOB_YMIN      @ 0x040;
+    blob_ymax_reg      BLOB_YMAX      @ 0x044;
+    max_blobs_cfg_reg  MAX_BLOBS_CFG  @ 0x048;
+    dma_base_lo_reg    DMA_BASE_LO    @ 0x050;
+    dma_base_hi_reg    DMA_BASE_HI    @ 0x054;
+    dma_len_reg        DMA_LEN        @ 0x058;
+    dma_ctrl_reg       DMA_CTRL       @ 0x05C;
+};
