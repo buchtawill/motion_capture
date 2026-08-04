@@ -84,6 +84,13 @@ def generate_test_cases(output_dir: str, threshold: int = 128) -> None:
         (5,  640,  400, 'single',   0,  1,  '640x400, single pixel blob at (100,100)'),
         (6, 1280,  800, 'near',    45,  2,  '1280x800, two blobs nearly touching (gap=2)'),
         (7, 1280,  800, 'overlap', 46,  2,  '1280x800, two blobs overlapping (should merge)'),
+        # 640x400 cases distinct from each other (different seeds/blob counts) for
+        # mocap_wrapper's double-buffer / race-condition tests (Group C): each must
+        # have a different histogram AND a different blob table so a test can prove
+        # the RTL published the correct frame's data, not a stale/adjacent one.
+        (10, 640,  400, 'blobs',  100,  3,  '640x400, 3 random blobs (race test A)'),
+        (11, 640,  400, 'blobs',  101,  7,  '640x400, 7 random blobs (race test B)'),
+        (12, 640,  400, 'blobs',  102, 12,  '640x400, 12 random blobs (race test C)'),
     ]
 
     for idx, width, height, mode, seed, num_blobs, desc in cases:
