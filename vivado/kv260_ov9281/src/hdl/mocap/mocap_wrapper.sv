@@ -331,7 +331,8 @@ module mocap_wrapper #(
         FC_PROCESS               = 4'd5,
         FC_FINALIZE              = 4'd6,
         FC_COPY                  = 4'd7,
-        FC_PUBLISH               = 4'd8
+        FC_PUBLISH               = 4'd8,
+        FC_LATCH                 = 4'd9   // 1-cycle: let blob_table.blob_count settle
     } fc_state_t;
 
     fc_state_t fc_state, fc_next;
@@ -358,7 +359,8 @@ module mocap_wrapper #(
             FC_SCRUB:                 if (hist_scrub_done_wb && !bt_clearing) fc_next = FC_WAIT_SOF;
             FC_WAIT_SOF:              if (in_fifo_m_valid && in_pix_tuser[0]) fc_next = FC_PROCESS;
             FC_PROCESS:               if (re_frame_done) fc_next = FC_FINALIZE;
-            FC_FINALIZE:              if (bt_flatten_done && hist_flush_done) fc_next = FC_COPY;
+            FC_FINALIZE:              if (bt_flatten_done && hist_flush_done) fc_next = FC_LATCH;
+            FC_LATCH:                 fc_next = FC_COPY;
             FC_COPY:                  if (copy_done) fc_next = FC_PUBLISH;
             FC_PUBLISH:               fc_next = ctrl_enable ? FC_SCRUB : FC_IDLE;
             default:                  fc_next = FC_POST_RESET_SCRUB;
@@ -464,7 +466,11 @@ module mocap_wrapper #(
             copy_count_q       <= 8'h0;
             copy_addr_prev_q  <= 8'h0;
             copy_prev_valid_q <= 1'b0;
-        end else if (fc_state == FC_FINALIZE && fc_next == FC_COPY) begin
+        end else if (fc_state == FC_LATCH) begin
+            // blob_table updates its blob_count register on the edge LEAVING
+            // BT_DONE (i.e. the FINALIZE->LATCH edge), so capture the CURRENT
+            // frame's count here in FC_LATCH, one cycle later, not at the
+            // FINALIZE->COPY edge (which would grab the previous frame's count).
             copy_idx_q        <= 8'h0;
             copy_count_q       <= {1'b0, bt_blob_count};
             copy_prev_valid_q <= 1'b0;
