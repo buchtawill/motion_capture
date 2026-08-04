@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Never co-author commits as claude, keep it as the user on the machine.
+
 ## Project Overview
 
 Embedded FPGA-based camera capture and video output pipeline targeting Xilinx Zybo Z7 and KV260 boards with OV9281 (global shutter) or OV5640 cameras. Hardware is designed in Vivado (IP Integrator block design); software runs bare-metal on the ARM processor via Vitis.
