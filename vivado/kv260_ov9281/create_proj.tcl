@@ -37,11 +37,11 @@ proc checkRequiredFiles { origin_dir} {
   set status true
   set files [list \
  "[file normalize "$origin_dir/src/bd/system.tcl"]"\
- "[file normalize "$origin_dir/src/hdl/isp/isp_math_top.sv"]"\
- "[file normalize "$origin_dir/src/hdl/isp/isp_histogram.sv"]"\
- "[file normalize "$origin_dir/src/hdl/isp/rdl_out/rtl/isp_regs_pkg.sv"]"\
- "[file normalize "$origin_dir/src/hdl/isp/rdl_out/rtl/isp_regs.sv"]"\
- "[file normalize "$origin_dir/src/hdl/isp/isp_math_wrapper.v"]"\
+ "[file normalize "$origin_dir/../ip_repo/isp/isp_math_top.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/isp/isp_histogram.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs_pkg.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/isp/isp_math_wrapper.v"]"\
  "[file normalize "$origin_dir/src/constraints/timing.xdc"]"\
   ]
   foreach ifile $files {
@@ -164,13 +164,13 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
 set files [list \
- [file normalize "$origin_dir/src/hdl/isp/isp_regs_defines.svh"]\
+ [file normalize "$origin_dir/../ip_repo/isp/isp_regs_defines.svh"]\
  [file normalize "$origin_dir/src/hdl/stream_fifo.sv"]\
- [file normalize "$origin_dir/src/hdl/isp/isp_math_top.sv"]\
- [file normalize "$origin_dir/src/hdl/isp/isp_histogram.sv"]\
- [file normalize "$origin_dir/src/hdl/isp/rdl_out/rtl/isp_regs_pkg.sv"]\
- [file normalize "$origin_dir/src/hdl/isp/rdl_out/rtl/isp_regs.sv"]\
- [file normalize "$origin_dir/src/hdl/isp/isp_math_wrapper.v"]\
+ [file normalize "$origin_dir/../ip_repo/isp/isp_math_top.sv"]\
+ [file normalize "$origin_dir/../ip_repo/isp/isp_histogram.sv"]\
+ [file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs_pkg.sv"]\
+ [file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs.sv"]\
+ [file normalize "$origin_dir/../ip_repo/isp/isp_math_wrapper.v"]\
 ]
 add_files -norecurse -fileset $obj $files
 
