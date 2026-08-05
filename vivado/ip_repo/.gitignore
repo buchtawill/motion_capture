@@ -1,0 +1,4 @@
+# PeakRDL-generated register products (RTL/HTML/C headers) are build artifacts —
+# regenerate from each IP's rdl/*.rdl via `make -C <ip>/rdl` (or `make -C <ip>`).
+# Applies to every IP in the repo: isp, blob_detect_rle, blob_detect_grid, mocap.
+rdl_out/
