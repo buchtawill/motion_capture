@@ -191,10 +191,22 @@ set_property -name "file_type" -value "SystemVerilog Header" -objects $file_obj
 # sim Makefile's `-i ../rdl`). Needed for both module-reference parsing and synth.
 set_property include_dirs [list [file normalize "$origin_dir/../ip_repo/mocap/rdl"]] [get_filesets sources_1]
 
+# The BD instantiates mocap_wrapper as a *module reference* (create_bd_cell
+# -type module -reference). Vivado can only resolve module references in
+# automatic source-management mode -- in DisplayOnly/manual mode it emits
+# "[filemgmt 56-176] Module references are not supported in manual compile order
+# mode" and then "[BD 41-1726] Unable to resolve module-source for block". Put
+# the project in automatic mode and rebuild the compile order so the mocap_wrapper
+# hierarchy (mocap_wrapper.v -> mocap_top.sv + package/blob/hist sources) is
+# analyzed and the reference resolves.
+set_property source_mgmt_mode All [current_project]
+update_compile_order -fileset sources_1
+
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]
 set_property -name "dataflow_viewer_settings" -value "min_width=16" -objects $obj
 set_property -name "top" -value "design_1_wrapper" -objects $obj
+set_property -name "top_auto_set" -value "0" -objects $obj
 
 # Create 'constrs_1' fileset (if not found)
 if {[string equal [get_filesets -quiet constrs_1] ""]} {
