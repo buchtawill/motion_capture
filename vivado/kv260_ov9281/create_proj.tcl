@@ -37,11 +37,16 @@ proc checkRequiredFiles { origin_dir} {
   set status true
   set files [list \
  "[file normalize "$origin_dir/src/bd/system.tcl"]"\
- "[file normalize "$origin_dir/../ip_repo/isp/isp_math_top.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/common/stream_fifo.sv"]"\
  "[file normalize "$origin_dir/../ip_repo/isp/isp_histogram.sv"]"\
- "[file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs_pkg.sv"]"\
- "[file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs.sv"]"\
- "[file normalize "$origin_dir/../ip_repo/isp/isp_math_wrapper.v"]"\
+ "[file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/run_extractor.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/row_merger.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/blob_table.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/mocap/rdl/mocap_regs_defines.svh"]"\
+ "[file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs_pkg.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/mocap/hdl/mocap_top.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/mocap/hdl/mocap_wrapper.v"]"\
  "[file normalize "$origin_dir/src/constraints/timing.xdc"]"\
   ]
   foreach ifile $files {
@@ -164,19 +169,27 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
 set files [list \
- [file normalize "$origin_dir/../ip_repo/isp/isp_regs_defines.svh"]\
+ [file normalize "$origin_dir/../ip_repo/mocap/rdl/mocap_regs_defines.svh"]\
  [file normalize "$origin_dir/../ip_repo/common/stream_fifo.sv"]\
- [file normalize "$origin_dir/../ip_repo/isp/isp_math_top.sv"]\
  [file normalize "$origin_dir/../ip_repo/isp/isp_histogram.sv"]\
- [file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs_pkg.sv"]\
- [file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs.sv"]\
- [file normalize "$origin_dir/../ip_repo/isp/isp_math_wrapper.v"]\
+ [file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/run_extractor.sv"]\
+ [file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/row_merger.sv"]\
+ [file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/blob_table.sv"]\
+ [file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs_pkg.sv"]\
+ [file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs.sv"]\
+ [file normalize "$origin_dir/../ip_repo/mocap/hdl/mocap_top.sv"]\
+ [file normalize "$origin_dir/../ip_repo/mocap/hdl/mocap_wrapper.v"]\
 ]
 add_files -norecurse -fileset $obj $files
 
 # Mark the SVH as a header so Vivado doesn't treat it as a top-level RTL module
-set file_obj [get_files -of_objects [get_filesets sources_1] [list "*isp_regs_defines.svh"]]
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*mocap_regs_defines.svh"]]
 set_property -name "file_type" -value "SystemVerilog Header" -objects $file_obj
+
+# mocap_top.sv (in mocap/hdl) `include`s mocap_regs_defines.svh (in mocap/rdl),
+# a different directory, so add mocap/rdl to the include search path (mirrors the
+# sim Makefile's `-i ../rdl`). Needed for both module-reference parsing and synth.
+set_property include_dirs [list [file normalize "$origin_dir/../ip_repo/mocap/rdl"]] [get_filesets sources_1]
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]
