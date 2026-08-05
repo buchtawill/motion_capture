@@ -17,7 +17,7 @@ module mocap_wrapper #(
     input  wire         aresetn,
 
     // -------------------------------------------------------------------------
-    // AXI4-Lite Slave (7-bit byte address; region size 0x60)
+    // AXI4-Lite Slave (7-bit byte address; region size 0x68)
     // -------------------------------------------------------------------------
     input  wire [6:0]   s_axi_awaddr,
     input  wire [2:0]   s_axi_awprot,

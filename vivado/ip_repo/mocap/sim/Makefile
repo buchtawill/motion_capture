@@ -39,7 +39,8 @@ BLOB_MODEL := $(BLOB_DIR)/model
 VIVADO_SETTINGS := /tools/Xilinx/Vivado/2024.1/settings64.sh
 MOCAP_ENV       := /home/will/Desktop/motion_capture/mocap_env/bin/activate
 
-SRCS_tb_mocap_wrapper := \
+# Shared RTL for both mocap testbenches (SV core + Verilog IP-Integrator shell).
+MOCAP_RTL := \
 	$(RDL_DIR)/mocap_regs_pkg.sv \
 	$(RDL_DIR)/mocap_regs.sv \
 	$(COMMON_DIR)/stream_fifo.sv \
@@ -48,10 +49,15 @@ SRCS_tb_mocap_wrapper := \
 	$(BLOB_DIR)/hdl/row_merger.sv \
 	$(BLOB_DIR)/hdl/blob_table.sv \
 	$(HDL_DIR)/mocap_top.sv \
-	$(HDL_DIR)/mocap_wrapper.v \
-	$(SIM_DIR)/tb_mocap_wrapper.sv
+	$(HDL_DIR)/mocap_wrapper.v
 
+# tb_mocap_wrapper   : DUT = SV core mocap_top (backdoor + cosim vs goldens)
+SRCS_tb_mocap_wrapper := $(MOCAP_RTL) $(SIM_DIR)/tb_mocap_wrapper.sv
 INCDIRS_tb_mocap_wrapper := $(INC_RDL)
+
+# tb_mocap_wrapper_v : DUT = Verilog shell mocap_wrapper (frontdoor integration)
+SRCS_tb_mocap_wrapper_v := $(MOCAP_RTL) $(SIM_DIR)/tb_mocap_wrapper_v.sv
+INCDIRS_tb_mocap_wrapper_v := $(INC_RDL)
 
 SRCS    := $(SRCS_$(TB))
 INCDIRS := $(INCDIRS_$(TB))

@@ -100,7 +100,7 @@ module tb_mocap_wrapper;
     // =========================================================================
     // DUT
     // =========================================================================
-    mocap_wrapper #(
+    mocap_top #(
         .MAX_BLOBS        (MAX_BLOBS),
         .MAX_RUNS_PER_ROW (MAX_RUNS_PER_ROW),
         .AXIS_DATA_WIDTH  (AXIS_DATA_WIDTH)
@@ -986,6 +986,65 @@ module tb_mocap_wrapper;
             check32("E: FRAME_ID cleared after RESET", frame_id_val, 32'h0);
             axi_read(`MOCAP_REG_DROPPED_FRAMES, dropped_val);
             check32("E: DROPPED_FRAMES cleared after RESET", dropped_val, 32'h0);
+        end
+
+        // =====================================================================
+        // Group F -- free-running 64-bit cycle counter + snapshot (0x60/0x64)
+        // =====================================================================
+        begin : group_f
+            logic [31:0] lo1, hi1, lo2, hi2, lo_hold, hi_hold;
+            logic [63:0] snap1, snap2;
+
+            hw_reset();
+
+            // F1: CYCLE_SNAPSHOT captures the live counter; two snapshots taken
+            //     1000 clocks apart show it free-running at ~1 tick/clk.
+            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo1);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi1);
+            snap1 = {hi1, lo1};
+
+            repeat (1000) @(posedge clk);
+
+            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo2);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi2);
+            snap2 = {hi2, lo2};
+
+            // Delta is the 1000-clk gap plus a small, deterministic AXI overhead
+            // (the intervening reads + the second snapshot write); bound loosely.
+            if ((snap2 > snap1) && ((snap2 - snap1) >= 64'd1000) && ((snap2 - snap1) < 64'd1400))
+                pass_msg($sformatf("F1: cycle counter free-runs (delta=%0d over 1000-clk gap)", snap2 - snap1));
+            else
+                fail_msg($sformatf("F1: cycle delta out of range: %0d (want ~1000)", snap2 - snap1));
+
+            // F2: the snapshot registers HOLD the captured value -- they must not
+            //     track the still-advancing live counter between snapshots.
+            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo_hold);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi_hold);
+            repeat (500) @(posedge clk);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo2);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi2);
+            check32("F2: CYCLE_SNAP_LO stable between snapshots", lo2, lo_hold);
+            check32("F2: CYCLE_SNAP_HI stable between snapshots", hi2, hi_hold);
+
+            // F3: the timebase survives a soft reset (CTRL.RESET only clears frame
+            //     state -- the cycle counter resets on aresetn alone).
+            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo1);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi1);
+            snap1 = {hi1, lo1};
+            do_reset_pulse();
+            repeat (50) @(posedge clk);
+            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo2);
+            axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi2);
+            snap2 = {hi2, lo2};
+            if (snap2 > snap1)
+                pass_msg($sformatf("F3: cycle counter survives CTRL.RESET (%0d -> %0d)", snap1, snap2));
+            else
+                fail_msg($sformatf("F3: cycle counter cleared by CTRL.RESET (%0d -> %0d)", snap1, snap2));
         end
 
         // =====================================================================

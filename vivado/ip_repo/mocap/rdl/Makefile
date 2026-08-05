@@ -20,7 +20,7 @@ RTL_DIR     := $(OUT_DIR)/rtl
 SW_DIR      := $(OUT_DIR)/sw
 HTML_DIR    := $(OUT_DIR)/html
 
-VENV        := ../../../../../mocap_env/bin/activate
+VENV        := ../../../../mocap_env/bin/activate
 PEAKRDL     := . $(VENV) && peakrdl
 
 # =============================================================

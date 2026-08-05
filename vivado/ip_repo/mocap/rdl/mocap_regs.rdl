@@ -43,10 +43,13 @@
 //   0x54  DMA_BASE_HI     R/W   RESERVED for Arch #2
 //   0x58  DMA_LEN         R/W   RESERVED for Arch #2
 //   0x5C  DMA_CTRL        R/W   RESERVED for Arch #2
+//   0x60  CYCLE_SNAP_LO   RO    Cycle counter snapshot, low  32b
+//   0x64  CYCLE_SNAP_HI   RO    Cycle counter snapshot, high 32b
 //
 // A SW reset (CTRL.RESET = 1) clears all counters, buffers, status flags, and
-// DROPPED_FRAMES; it does NOT reset HRES, VRES, CTRL.THRESHOLD, or the AUTOINC
-// bits. Blob field order (BLOB_COUNT_RD, BLOB_SX, BLOB_SY, BLOB_XMIN, BLOB_XMAX,
+// DROPPED_FRAMES; it does NOT reset HRES, VRES, CTRL.THRESHOLD, the AUTOINC
+// bits, or the free-running cycle counter (which resets only on aresetn).
+// Blob field order (BLOB_COUNT_RD, BLOB_SX, BLOB_SY, BLOB_XMIN, BLOB_XMAX,
 // BLOB_YMIN, BLOB_YMAX) matches the model/compare.py golden layout.
 
 addrmap mocap_regs {
@@ -82,6 +85,11 @@ addrmap mocap_regs {
         field { hw = r; sw = rw; } BLOB_ADDR_AUTOINC[1] = 1;
         // Bit 4: When 1, BLOB_ADDR auto-increments (wrap at MAX_BLOBS-1) after
         //        each blob-field read. Defaults to 1.
+
+        field { hw = r; sw = w; singlepulse; } CYCLE_SNAPSHOT[1] = 0;
+        // Bit 5: Snapshot the free-running 64-bit cycle counter into
+        //        CYCLE_SNAP_LO / CYCLE_SNAP_HI. Single-pulse; the captured value
+        //        holds until the next snapshot, so LO/HI read back atomically.
 
         field { hw = r; sw = rw; } THRESHOLD[15:8] = 8'd128;
         // Bits [15:8]: Pixel threshold for blob foreground (pixel >= THRESHOLD).
@@ -236,6 +244,24 @@ addrmap mocap_regs {
     };
 
     // =========================================================
+    // 0x60 / 0x64: Cycle-counter snapshot (RO)
+    // =========================================================
+    // A free-running 64-bit counter increments every aclk from hardware reset
+    // (aresetn); it is NOT affected by CTRL.RESET so it stays a monotonic
+    // timebase. Pulse CTRL.CYCLE_SNAPSHOT to atomically capture it here, then
+    // read LO then HI. Frame period = (snapN.hi:lo - snapN-1.hi:lo).
+    reg cycle_snap_lo_reg {
+        desc = "Low 32 bits of the cycle counter captured at the last
+                CTRL.CYCLE_SNAPSHOT pulse.";
+        field { hw = w; sw = r; } CYCLE_SNAP_LO[32] = 0;
+    };
+    reg cycle_snap_hi_reg {
+        desc = "High 32 bits of the cycle counter captured at the last
+                CTRL.CYCLE_SNAPSHOT pulse.";
+        field { hw = w; sw = r; } CYCLE_SNAP_HI[32] = 0;
+    };
+
+    // =========================================================
     // 0x50..0x5C: RESERVED for Arch #2 (DMA streaming). R/W storage now, unused.
     // =========================================================
     reg dma_base_lo_reg {
@@ -280,4 +306,6 @@ addrmap mocap_regs {
     dma_base_hi_reg    DMA_BASE_HI    @ 0x054;
     dma_len_reg        DMA_LEN        @ 0x058;
     dma_ctrl_reg       DMA_CTRL       @ 0x05C;
+    cycle_snap_lo_reg  CYCLE_SNAP_LO  @ 0x060;
+    cycle_snap_hi_reg  CYCLE_SNAP_HI  @ 0x064;
 };

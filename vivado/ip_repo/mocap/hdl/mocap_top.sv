@@ -1,5 +1,6 @@
-// mocap_wrapper.sv
-// KV260 / OV9281 motion-capture wrapper.
+// mocap_top.sv
+// Motion-capture fused-pipeline core (SystemVerilog).
+// Wrapped for IP Integrator by mocap_wrapper.v.
 //
 // Fuses the 256-bin ISP histogram and the RLE blob detector behind one AXI4-Lite
 // register file with a race-free, hardware-owned double-buffered result store.
@@ -40,7 +41,7 @@
 
 import mocap_regs_pkg::*;
 
-module mocap_wrapper #(
+module mocap_top #(
     parameter integer MAX_BLOBS        = 128,
     parameter integer MAX_RUNS_PER_ROW = 640,
     parameter integer AXIS_DATA_WIDTH  = 32,
@@ -54,7 +55,7 @@ module mocap_wrapper #(
     input  wire                        aresetn,
 
     // -------------------------------------------------------------------------
-    // AXI4-Lite Slave (7-bit byte address; region size 0x60)
+    // AXI4-Lite Slave (7-bit byte address; region size 0x68)
     // -------------------------------------------------------------------------
     input  wire [6:0]                  s_axi_awaddr,
     input  wire [2:0]                  s_axi_awprot,
@@ -562,6 +563,28 @@ module mocap_wrapper #(
     end
 
     // =========================================================================
+    // Free-running 64-bit cycle counter + SW-triggered snapshot
+    //   - cycle_counter_q counts every aclk from hardware reset (aresetn). It is
+    //     intentionally NOT cleared by CTRL.RESET so it stays a monotonic
+    //     timebase across soft resets.
+    //   - A CTRL.CYCLE_SNAPSHOT pulse atomically captures it into cycle_snap_q,
+    //     which SW reads back via CYCLE_SNAP_LO / CYCLE_SNAP_HI. Because the snap
+    //     regs only change on the pulse, the two 32-bit reads never tear.
+    // =========================================================================
+    logic [63:0] cycle_counter_q;
+    logic [63:0] cycle_snap_q;
+
+    always_ff @(posedge aclk) begin
+        if (!aresetn) cycle_counter_q <= 64'h0;
+        else          cycle_counter_q <= cycle_counter_q + 64'h1;
+    end
+
+    always_ff @(posedge aclk) begin
+        if (!aresetn)                              cycle_snap_q <= 64'h0;
+        else if (hwif_out.CTRL.CYCLE_SNAPSHOT.value) cycle_snap_q <= cycle_counter_q;
+    end
+
+    // =========================================================================
     // Register glue (hwif_in)
     // =========================================================================
     wire [159:0] blob_rd_rec = wrapper_blob_buf[read_bank_q][hwif_out.BLOB_ADDR.BLOB_ADDR.value[6:0]];
@@ -607,6 +630,10 @@ module mocap_wrapper #(
         hwif_in.BLOB_YMAX.BLOB_YMAX.next         = blob_rd_rec[ 15:  0];
 
         hwif_in.MAX_BLOBS_CFG.MAX_BLOBS_CFG.next = 16'(MAX_BLOBS);
+
+        // ---- Cycle-counter snapshot readback ----
+        hwif_in.CYCLE_SNAP_LO.CYCLE_SNAP_LO.next = cycle_snap_q[31:0];
+        hwif_in.CYCLE_SNAP_HI.CYCLE_SNAP_HI.next = cycle_snap_q[63:32];
     end
 
     // =========================================================================
