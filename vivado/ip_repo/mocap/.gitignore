@@ -1,0 +1,10 @@
+# PeakRDL-generated register RTL/docs/headers are build products — regenerate
+# from rdl/mocap_regs.rdl via `make -C rdl`.
+rdl/rdl_out/
+
+# Simulation outputs
+sim/sim_out/
+sim/*.jou
+sim/*.log
+sim/.Xil/
+sim/xsim.dir/

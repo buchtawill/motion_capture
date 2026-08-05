@@ -165,7 +165,7 @@ if {[string equal [get_filesets -quiet sources_1] ""]} {
 set obj [get_filesets sources_1]
 set files [list \
  [file normalize "$origin_dir/../ip_repo/isp/isp_regs_defines.svh"]\
- [file normalize "$origin_dir/src/hdl/stream_fifo.sv"]\
+ [file normalize "$origin_dir/../ip_repo/common/stream_fifo.sv"]\
  [file normalize "$origin_dir/../ip_repo/isp/isp_math_top.sv"]\
  [file normalize "$origin_dir/../ip_repo/isp/isp_histogram.sv"]\
  [file normalize "$origin_dir/../ip_repo/isp/rdl_out/rtl/isp_regs_pkg.sv"]\

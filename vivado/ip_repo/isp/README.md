@@ -61,7 +61,7 @@ positions used by RTL and testbenches).
 ### stream_fifo.sv
 
 Generic valid/ready FIFO parameterized by width and depth. Shared utility,
-lives one level up at `src/hdl/stream_fifo.sv`.
+lives in the common IP dir at `ip_repo/common/stream_fifo.sv`.
 
 ## Testbenches
 
