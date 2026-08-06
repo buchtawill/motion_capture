@@ -1036,6 +1036,59 @@ int main(int argc, char *argv[]) {
     for (unsigned i = 0; i < nbuf; ++i)
         qbuf(static_cast<int>(i));
 
+    // --- mocap blob detector + red-box overlay ------------------------------
+    //
+    // ORDER MATTERS: arm the mocap block BEFORE VIDIOC_STREAMON. The
+    // mocap_wrapper is INLINE on the CSI->VDMA stream and gates passthrough on
+    // CTRL.ENABLE -- run_extractor only asserts s_ready (drains the input FIFO)
+    // while the blob core is enabled and framed at the correct HRES/VRES. If the
+    // camera streams first, beats pile into a disabled block: the input FIFO
+    // backpressures the CSI and the first frame's SOF framing races the arm. By
+    // arming first (block sits in WAIT_SOF with an empty FIFO) the very first
+    // streamed frame is captured and passed through cleanly from beat 0. So we
+    // MUST arm whenever the block is present; --no-blobs only suppresses the
+    // overlay, it does NOT skip arming. (No mocap UIO => assume a transparent/
+    // older bitstream and let video flow unchanged.)
+    //
+    // Blob path: the block detects blobs on exactly the frames we display. We add
+    // its frame-done IRQ fd to the render poll() set; on each mocap frame we read
+    // the published bounding boxes, ACK the buffer, and redraw the ARGB overlay.
+    // The overlay plane FB is committed once (at modeset); we update its pixels
+    // in place each frame (thin red lines -- any tearing is imperceptible).
+    if (blob_threshold > 255)
+        die("--threshold must be 0-255");
+    std::unique_ptr<MocapPipeline> mocap_pipe;
+    std::unique_ptr<BlobDetector> blobdet;
+    BoxOverlay box{};
+    int mocap_fd = -1;
+    std::vector<Blob> blob_list;
+    mocap_pipe = MocapPipeline::discover();
+    if (mocap_pipe) {
+        // Arm for video passthrough (mandatory) at the capture resolution,
+        // BEFORE streaming starts so framing is clean from the first frame.
+        mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
+                        static_cast<uint8_t>(blob_threshold));
+        std::cout << "mocap pipeline armed " << gw << "x" << gh << ", threshold "
+                  << blob_threshold << ", MAX_BLOBS " << mocap_pipe->max_blobs()
+                  << "\n";
+        if (!blobs_disabled) {
+            blobdet.reset(new BlobDetector(*mocap_pipe));
+            box = drm_make_box_overlay(d, DISP_W, DISP_H);
+            d.box_fb_id = box.fb_id; // makes the modeset enable the overlay
+            mocap_fd = mocap_pipe->uio_fd();
+            mocap_pipe->arm_irq(); // enable the first frame-done interrupt
+            std::cout << "Blob overlay ON, box thickness " << box_thickness
+                      << "\n";
+        } else {
+            std::cout << "Blob overlay OFF (--no-blobs); block armed for video "
+                         "passthrough only\n";
+        }
+    } else {
+        std::cerr << "warning: no mocap UIO device found; assuming a transparent "
+                     "pipeline (no blob boxes, video passes through)\n";
+    }
+
+    // Start the camera feed now that the inline mocap block is armed and framed.
     int type_int = buf_type;
     if (xioctl(vfd, VIDIOC_STREAMON, &type_int) == -1)
         fail("VIDIOC_STREAMON");
@@ -1069,53 +1122,6 @@ int main(int argc, char *argv[]) {
         aecfg.speed = ae_speed;
         aecfg.interval = ae_interval;
         ae = AutoExposure::create(sensor_path, aecfg, isp.get());
-    }
-
-    // --- mocap blob detector + red-box overlay ------------------------------
-    //
-    // IMPORTANT: the mocap_wrapper block is INLINE on the CSI->VDMA stream and
-    // gates passthrough on CTRL.ENABLE -- run_extractor only asserts s_ready (and
-    // thus drains the input FIFO) while the blob core is enabled and framed at
-    // the correct HRES/VRES. So we MUST arm the block whenever it is present, or
-    // no video reaches VDMA at all. --no-blobs therefore only suppresses the
-    // overlay; it does NOT skip arming. (When the mocap UIO is absent we assume a
-    // transparent/older bitstream and let video flow unchanged.)
-    //
-    // Blob path: the block detects blobs on exactly the frames we display. We add
-    // its frame-done IRQ fd to the render poll() set; on each mocap frame we read
-    // the published bounding boxes, ACK the buffer, and redraw the ARGB overlay.
-    // The overlay plane FB is committed once (at modeset); we update its pixels
-    // in place each frame (thin red lines -- any tearing is imperceptible).
-    if (blob_threshold > 255)
-        die("--threshold must be 0-255");
-    std::unique_ptr<MocapPipeline> mocap_pipe;
-    std::unique_ptr<BlobDetector> blobdet;
-    BoxOverlay box{};
-    int mocap_fd = -1;
-    std::vector<Blob> blob_list;
-    mocap_pipe = MocapPipeline::discover();
-    if (mocap_pipe) {
-        // Arm for video passthrough (mandatory) at the capture resolution.
-        mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
-                        static_cast<uint8_t>(blob_threshold));
-        std::cout << "mocap pipeline armed " << gw << "x" << gh << ", threshold "
-                  << blob_threshold << ", MAX_BLOBS " << mocap_pipe->max_blobs()
-                  << "\n";
-        if (!blobs_disabled) {
-            blobdet.reset(new BlobDetector(*mocap_pipe));
-            box = drm_make_box_overlay(d, DISP_W, DISP_H);
-            d.box_fb_id = box.fb_id; // makes the modeset enable the overlay
-            mocap_fd = mocap_pipe->uio_fd();
-            mocap_pipe->arm_irq(); // enable the first frame-done interrupt
-            std::cout << "Blob overlay ON, box thickness " << box_thickness
-                      << "\n";
-        } else {
-            std::cout << "Blob overlay OFF (--no-blobs); block armed for video "
-                         "passthrough only\n";
-        }
-    } else {
-        std::cerr << "warning: no mocap UIO device found; assuming a transparent "
-                     "pipeline (no blob boxes, video passes through)\n";
     }
 
     // --- render loop --------------------------------------------------------
