@@ -78,7 +78,9 @@ module blob_table #(
         BT_MERGE_UF  = 4'd9,
         BT_FLATTEN   = 4'd10,
         BT_FLAT_EMIT = 4'd11,
-        BT_DONE      = 4'd12
+        BT_DONE      = 4'd12,
+        BT_ACCUM_RD  = 4'd13,   // pipeline: latch blob_*[find_root] before RMW
+        BT_MERGE_RD  = 4'd14    // pipeline: latch both roots' descriptors before merge
     } bt_state_t;
 
     bt_state_t state, state_next;
@@ -107,6 +109,33 @@ module blob_table #(
     // Run accumulation intermediates
     logic [15:0] run_len;
     logic [31:0] sum_x_add;
+
+    // =========================================================================
+    // Pipeline registers: isolate the 64:1 descriptor read-mux from the
+    // arithmetic + write-back so neither the read fan-in nor the RMW forms one
+    // long combinational path (closes 200 MHz timing). The FSM processes exactly
+    // one run/merge at a time and returns to BT_READY between ops, so a latched
+    // read is always consumed by the immediately following write with no RAW
+    // hazard -- no forwarding needed.
+    //   _a set: the single operand for BT_ACCUM (at find_root), and root_a's
+    //           descriptor for a merge.
+    //   _b set: root_b's descriptor for a merge.
+    // =========================================================================
+    logic [31:0] p_count_a, p_sum_x_a, p_sum_y_a;
+    logic [15:0] p_xmin_a,  p_xmax_a,  p_ymin_a, p_ymax_a;
+    logic [31:0] p_count_b, p_sum_x_b, p_sum_y_b;
+    logic [15:0] p_xmin_b,  p_xmax_b,  p_ymin_b, p_ymax_b;
+    logic [3:0]  p_rank_a,  p_rank_b;
+    // Registered run products, computed in BT_ACCUM_RD so the DSP multiply
+    // (sum_x_add / w_row*run_len) is NOT in series with the accumulate adder +
+    // write-back in BT_ACCUM (that combined DSP+CARRY8 chain was the last path
+    // over 5 ns). BT_ACCUM then does a clean 32-bit add of two registered values.
+    logic [31:0] p_sum_x_add, p_sum_y_add, p_run_len;
+
+    // Flatten pipeline: descriptor latched in BT_FLATTEN, emitted in BT_FLAT_EMIT
+    logic        p_flat_emit;
+    logic [31:0] p_flat_count, p_flat_sum_x, p_flat_sum_y;
+    logic [15:0] p_flat_xmin,  p_flat_xmax,  p_flat_ymin, p_flat_ymax;
 
     always_comb begin
         run_len   = w_xe - w_xs + 16'd1;
@@ -141,7 +170,10 @@ module blob_table #(
             end
             BT_FIND: begin
                 if (parent[find_x] == find_x || find_iter >= 4'd8)
-                    state_next = BT_ACCUM;
+                    state_next = BT_ACCUM_RD;
+            end
+            BT_ACCUM_RD: begin
+                state_next = BT_ACCUM;
             end
             BT_ACCUM: begin
                 state_next = BT_READY;
@@ -155,7 +187,10 @@ module blob_table #(
             end
             BT_FIND_MB: begin
                 if (parent[find_x] == find_x || find_iter >= 4'd8)
-                    state_next = BT_MERGE_UF;
+                    state_next = BT_MERGE_RD;
+            end
+            BT_MERGE_RD: begin
+                state_next = BT_MERGE_UF;
             end
             BT_MERGE_UF: begin
                 state_next = BT_READY;
@@ -163,6 +198,8 @@ module blob_table #(
             BT_FLATTEN: begin
                 if (flat_idx >= 8'(MAX_BLOBS))
                     state_next = BT_DONE;
+                else
+                    state_next = BT_FLAT_EMIT;
             end
             BT_FLAT_EMIT: begin
                 state_next = BT_FLATTEN;
@@ -252,21 +289,42 @@ module blob_table #(
                     if (parent[find_x] == find_x || find_iter >= 4'd8) begin
                         find_root <= find_x;
                     end else begin
-                        // Path compression: point to grandparent
-                        parent[find_x] <= parent[parent[find_x]];
-                        find_x         <= parent[find_x];
-                        find_iter      <= find_iter + 4'd1;
+                        // Single-step walk. Grandparent path-halving (parent[find_x]
+                        // <= parent[parent[find_x]]) was removed: it needs a chained
+                        // double 64:1 mux that sat on the critical path. Union-by-rank
+                        // bounds tree height to <= log2(MAX_BLOBS) < 8, so finds still
+                        // resolve within the find_iter cap.
+                        find_x    <= parent[find_x];
+                        find_iter <= find_iter + 4'd1;
                     end
                 end
 
+                // Pipeline stage 1: latch the descriptor at find_root (isolates the
+                // 64:1 read-mux from the accumulate + write-back).
+                BT_ACCUM_RD: begin
+                    p_count_a   <= blob_count_r[find_root];
+                    p_sum_x_a   <= blob_sum_x[find_root];
+                    p_sum_y_a   <= blob_sum_y[find_root];
+                    p_xmin_a    <= blob_xmin[find_root];
+                    p_xmax_a    <= blob_xmax[find_root];
+                    p_ymin_a    <= blob_ymin[find_root];
+                    p_ymax_a    <= blob_ymax[find_root];
+                    // Register the DSP products here (own cycle), off critical path.
+                    p_sum_x_add <= sum_x_add;
+                    p_sum_y_add <= {16'h0, w_row} * {16'h0, run_len};
+                    p_run_len   <= {16'h0, run_len};
+                end
+
+                // Pipeline stage 2: accumulate onto the latched values, write back.
+                // All operands here are registered -> clean 32-bit adds, no DSP.
                 BT_ACCUM: begin
-                    blob_count_r[find_root] <= blob_count_r[find_root] + {16'h0, run_len};
-                    blob_sum_x[find_root]   <= blob_sum_x[find_root] + sum_x_add;
-                    blob_sum_y[find_root]   <= blob_sum_y[find_root] + ({16'h0, w_row} * {16'h0, run_len});
-                    if (w_xs < blob_xmin[find_root]) blob_xmin[find_root] <= w_xs;
-                    if (w_xe > blob_xmax[find_root]) blob_xmax[find_root] <= w_xe;
-                    if (w_row < blob_ymin[find_root]) blob_ymin[find_root] <= w_row;
-                    if (w_row > blob_ymax[find_root]) blob_ymax[find_root] <= w_row;
+                    blob_count_r[find_root] <= p_count_a + p_run_len;
+                    blob_sum_x[find_root]   <= p_sum_x_a + p_sum_x_add;
+                    blob_sum_y[find_root]   <= p_sum_y_a + p_sum_y_add;
+                    if (w_xs  < p_xmin_a) blob_xmin[find_root] <= w_xs;
+                    if (w_xe  > p_xmax_a) blob_xmax[find_root] <= w_xe;
+                    if (w_row < p_ymin_a) blob_ymin[find_root] <= w_row;
+                    if (w_row > p_ymax_a) blob_ymax[find_root] <= w_row;
                 end
 
                 BT_DO_MERGE: begin
@@ -280,9 +338,9 @@ module blob_table #(
                         find_x    <= mrg_b;
                         find_iter <= '0;
                     end else begin
-                        parent[find_x] <= parent[parent[find_x]];
-                        find_x         <= parent[find_x];
-                        find_iter      <= find_iter + 4'd1;
+                        // Single-step walk (see BT_FIND note); no double-mux.
+                        find_x    <= parent[find_x];
+                        find_iter <= find_iter + 4'd1;
                     end
                 end
 
@@ -290,74 +348,96 @@ module blob_table #(
                     if (parent[find_x] == find_x || find_iter >= 4'd8) begin
                         root_b <= find_x;
                     end else begin
-                        parent[find_x] <= parent[parent[find_x]];
-                        find_x         <= parent[find_x];
-                        find_iter      <= find_iter + 4'd1;
+                        find_x    <= parent[find_x];
+                        find_iter <= find_iter + 4'd1;
                     end
                 end
 
+                // Pipeline stage 1: latch both roots' descriptors + ranks (two
+                // parallel 64:1 read-muxes, isolated from the merge arithmetic).
+                BT_MERGE_RD: begin
+                    p_count_a <= blob_count_r[root_a];
+                    p_sum_x_a <= blob_sum_x[root_a];
+                    p_sum_y_a <= blob_sum_y[root_a];
+                    p_xmin_a  <= blob_xmin[root_a];
+                    p_xmax_a  <= blob_xmax[root_a];
+                    p_ymin_a  <= blob_ymin[root_a];
+                    p_ymax_a  <= blob_ymax[root_a];
+                    p_rank_a  <= rank[root_a];
+                    p_count_b <= blob_count_r[root_b];
+                    p_sum_x_b <= blob_sum_x[root_b];
+                    p_sum_y_b <= blob_sum_y[root_b];
+                    p_xmin_b  <= blob_xmin[root_b];
+                    p_xmax_b  <= blob_xmax[root_b];
+                    p_ymin_b  <= blob_ymin[root_b];
+                    p_ymax_b  <= blob_ymax[root_b];
+                    p_rank_b  <= rank[root_b];
+                end
+
+                // Pipeline stage 2: union-by-rank on the latched descriptors,
+                // write back to the surviving root (no read-mux on this path).
                 BT_MERGE_UF: begin
                     if (root_a != root_b) begin
                         // Union by rank
-                        if (rank[root_a] < rank[root_b]) begin
+                        if (p_rank_a < p_rank_b) begin
                             parent[root_a] <= root_b;
                             // Merge descriptors into root_b
-                            blob_count_r[root_b] <= blob_count_r[root_b] + blob_count_r[root_a];
-                            blob_sum_x[root_b]   <= blob_sum_x[root_b] + blob_sum_x[root_a];
-                            blob_sum_y[root_b]   <= blob_sum_y[root_b] + blob_sum_y[root_a];
-                            if (blob_xmin[root_a] < blob_xmin[root_b])
-                                blob_xmin[root_b] <= blob_xmin[root_a];
-                            if (blob_xmax[root_a] > blob_xmax[root_b])
-                                blob_xmax[root_b] <= blob_xmax[root_a];
-                            if (blob_ymin[root_a] < blob_ymin[root_b])
-                                blob_ymin[root_b] <= blob_ymin[root_a];
-                            if (blob_ymax[root_a] > blob_ymax[root_b])
-                                blob_ymax[root_b] <= blob_ymax[root_a];
+                            blob_count_r[root_b] <= p_count_b + p_count_a;
+                            blob_sum_x[root_b]   <= p_sum_x_b + p_sum_x_a;
+                            blob_sum_y[root_b]   <= p_sum_y_b + p_sum_y_a;
+                            if (p_xmin_a < p_xmin_b) blob_xmin[root_b] <= p_xmin_a;
+                            if (p_xmax_a > p_xmax_b) blob_xmax[root_b] <= p_xmax_a;
+                            if (p_ymin_a < p_ymin_b) blob_ymin[root_b] <= p_ymin_a;
+                            if (p_ymax_a > p_ymax_b) blob_ymax[root_b] <= p_ymax_a;
                             // Clear merged source
                             blob_count_r[root_a] <= '0;
                             blob_sum_x[root_a]   <= '0;
                             blob_sum_y[root_a]   <= '0;
                         end else begin
                             parent[root_b] <= root_a;
-                            blob_count_r[root_a] <= blob_count_r[root_a] + blob_count_r[root_b];
-                            blob_sum_x[root_a]   <= blob_sum_x[root_a] + blob_sum_x[root_b];
-                            blob_sum_y[root_a]   <= blob_sum_y[root_a] + blob_sum_y[root_b];
-                            if (blob_xmin[root_b] < blob_xmin[root_a])
-                                blob_xmin[root_a] <= blob_xmin[root_b];
-                            if (blob_xmax[root_b] > blob_xmax[root_a])
-                                blob_xmax[root_a] <= blob_xmax[root_b];
-                            if (blob_ymin[root_b] < blob_ymin[root_a])
-                                blob_ymin[root_a] <= blob_ymin[root_b];
-                            if (blob_ymax[root_b] > blob_ymax[root_a])
-                                blob_ymax[root_a] <= blob_ymax[root_b];
+                            blob_count_r[root_a] <= p_count_a + p_count_b;
+                            blob_sum_x[root_a]   <= p_sum_x_a + p_sum_x_b;
+                            blob_sum_y[root_a]   <= p_sum_y_a + p_sum_y_b;
+                            if (p_xmin_b < p_xmin_a) blob_xmin[root_a] <= p_xmin_b;
+                            if (p_xmax_b > p_xmax_a) blob_xmax[root_a] <= p_xmax_b;
+                            if (p_ymin_b < p_ymin_a) blob_ymin[root_a] <= p_ymin_b;
+                            if (p_ymax_b > p_ymax_a) blob_ymax[root_a] <= p_ymax_b;
                             blob_count_r[root_b] <= '0;
                             blob_sum_x[root_b]   <= '0;
                             blob_sum_y[root_b]   <= '0;
-                            if (rank[root_a] == rank[root_b])
-                                rank[root_a] <= rank[root_a] + 4'd1;
+                            if (p_rank_a == p_rank_b)
+                                rank[root_a] <= p_rank_a + 4'd1;
                         end
                     end
                 end
 
+                // Pipeline stage 1: latch the descriptor at flat_idx and whether
+                // it is a root-with-data (isolates the 8x 64:1 read-mux cone from
+                // the 160-bit result_ram write in BT_FLAT_EMIT). No increment here.
                 BT_FLATTEN: begin
                     if (flat_idx < 8'(MAX_BLOBS)) begin
-                        // Find root for this entry
-                        if (parent[flat_idx[6:0]] == flat_idx[6:0] &&
-                            blob_count_r[flat_idx[6:0]] != 32'h0) begin
-                            // This is a root with data — emit to result BRAM
-                            result_ram[flat_out_id] <= {
-                                blob_count_r[flat_idx[6:0]],
-                                blob_sum_x[flat_idx[6:0]],
-                                blob_sum_y[flat_idx[6:0]],
-                                blob_xmin[flat_idx[6:0]],
-                                blob_xmax[flat_idx[6:0]],
-                                blob_ymin[flat_idx[6:0]],
-                                blob_ymax[flat_idx[6:0]]
-                            };
-                            flat_out_id <= flat_out_id + 7'd1;
-                        end
-                        flat_idx <= flat_idx + 8'd1;
+                        p_flat_emit  <= (parent[flat_idx[6:0]] == flat_idx[6:0]) &&
+                                        (blob_count_r[flat_idx[6:0]] != 32'h0);
+                        p_flat_count <= blob_count_r[flat_idx[6:0]];
+                        p_flat_sum_x <= blob_sum_x[flat_idx[6:0]];
+                        p_flat_sum_y <= blob_sum_y[flat_idx[6:0]];
+                        p_flat_xmin  <= blob_xmin[flat_idx[6:0]];
+                        p_flat_xmax  <= blob_xmax[flat_idx[6:0]];
+                        p_flat_ymin  <= blob_ymin[flat_idx[6:0]];
+                        p_flat_ymax  <= blob_ymax[flat_idx[6:0]];
                     end
+                end
+
+                // Pipeline stage 2: emit the latched root descriptor to result BRAM.
+                BT_FLAT_EMIT: begin
+                    if (p_flat_emit) begin
+                        result_ram[flat_out_id] <= {
+                            p_flat_count, p_flat_sum_x, p_flat_sum_y,
+                            p_flat_xmin,  p_flat_xmax,  p_flat_ymin, p_flat_ymax
+                        };
+                        flat_out_id <= flat_out_id + 7'd1;
+                    end
+                    flat_idx <= flat_idx + 8'd1;
                 end
 
                 BT_DONE: begin
