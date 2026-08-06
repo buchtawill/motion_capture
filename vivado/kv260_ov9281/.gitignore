@@ -2,5 +2,6 @@
 *.zip.Xil
 *.jou*
 *.log*
+vivado_pid*
 NA
 kv260_ov9281_proj

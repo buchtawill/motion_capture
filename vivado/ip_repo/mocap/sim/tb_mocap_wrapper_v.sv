@@ -27,7 +27,8 @@
 module tb_mocap_wrapper_v;
 
     localparam real CLK_HALF_NS     = 2.5; // 200 MHz
-    localparam int  MAX_BLOBS       = 128;
+    localparam int  MAX_BLOBS       = 64;
+    localparam int  MAX_RUNS_ROW    = 64;
     localparam int  MAX_FRAME_WORDS = 1280 * 800 / 4;
     localparam int  IRQ_TIMEOUT     = 2_000_000;
 
@@ -59,7 +60,7 @@ module tb_mocap_wrapper_v;
     // =========================================================================
     mocap_wrapper #(
         .MAX_BLOBS        (MAX_BLOBS),
-        .MAX_RUNS_PER_ROW (640)
+        .MAX_RUNS_PER_ROW (MAX_RUNS_ROW)
     ) dut (
         .aclk             (clk),
         .aresetn          (aresetn),
@@ -146,10 +147,8 @@ module tb_mocap_wrapper_v;
     endtask
 
     task automatic results_ack();
-        axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_ENABLE | `MOCAP_CTRL_RESULTS_ACK
-                                 | `MOCAP_CTRL_HIST_ADDR_AUTOINC
-                                 | `MOCAP_CTRL_BLOB_ADDR_AUTOINC
-                                 | `MOCAP_CTRL_THRESHOLD(8'd128));
+        // Pulse via the CMD doorbell -- does not disturb CTRL settings.
+        axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_RESULTS_ACK);
     endtask
 
     task automatic stream_beat(input logic [31:0] data, input logic sof, input logic eol);
@@ -328,12 +327,12 @@ module tb_mocap_wrapper_v;
         // W2 -- free-running cycle counter + snapshot, through the wrapper
         // =====================================================================
         begin : w2
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo1);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi1);
             snap1 = {hi1, lo1};
             repeat (1000) @(posedge clk);
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo2);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi2);
             snap2 = {hi2, lo2};

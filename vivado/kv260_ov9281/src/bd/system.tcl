@@ -811,7 +811,14 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
      catch {common::send_gid_msg -ssname BD::TCL -id 2096 -severity "ERROR" "Unable to referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
      return 1
    }
-  
+  # Size the fabric-resource params for this instance: 64 blobs / 64 runs-per-row
+  # (sized for sparse IR markers; keeps blob_table + row_merger register files
+  # small enough to fit alongside VDMA/MIPI/PS interconnect on the KV260).
+  set_property -dict [list \
+    CONFIG.MAX_BLOBS {64} \
+    CONFIG.MAX_RUNS_PER_ROW {64} \
+  ] $mocap_wrapper_0
+
   # Create instance: xlconcat_0, and set properties
   set xlconcat_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_0 ]
   set_property CONFIG.NUM_PORTS {4} $xlconcat_0

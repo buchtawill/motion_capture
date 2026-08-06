@@ -45,8 +45,8 @@ module tb_mocap_wrapper;
     // =========================================================================
     // Parameters (mirror DUT defaults)
     // =========================================================================
-    localparam int MAX_BLOBS        = 128;
-    localparam int MAX_RUNS_PER_ROW = 640;
+    localparam int MAX_BLOBS        = 64;
+    localparam int MAX_RUNS_PER_ROW = 64;
     localparam int AXIS_DATA_WIDTH  = 32;
     // Sized for the largest frame used by any test in this suite (Group D
     // uses 1280x800 frames). Was previously sized only for 640x400, which
@@ -222,12 +222,20 @@ module tb_mocap_wrapper;
     logic       ctrl_blob_ai_q  = 1'b1;
     logic [7:0] ctrl_thresh_q   = 8'd128;
 
+    // Write the sticky CTRL settings from the SW shadow (no pulse bits -- those
+    // live in the separate CMD register, so a CTRL write never re-triggers a
+    // reset/ack/snapshot).
     task automatic ctrl_update(input bit do_reset = 0, input bit do_ack = 0);
         logic [31:0] w;
-        w = {16'h0, ctrl_thresh_q,
-             3'b000, ctrl_blob_ai_q, ctrl_hist_ai_q,
-             do_ack, ctrl_enable_q, do_reset};
+        w = {16'h0, ctrl_thresh_q,          // [15:8] THRESHOLD
+             5'b000_00,                      // [7:3] reserved
+             ctrl_blob_ai_q,                 // [2] BLOB_ADDR_AUTOINC
+             ctrl_hist_ai_q,                 // [1] HIST_ADDR_AUTOINC
+             ctrl_enable_q};                 // [0] ENABLE
         axi_write(`MOCAP_REG_CTRL, w);
+        // Pulses go to the CMD doorbell (write-only single-pulse).
+        if (do_reset) axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_RESET);
+        if (do_ack)   axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_RESULTS_ACK);
     endtask
 
     // arm_continuous(hres,vres,thr) -- write HRES,VRES, CTRL(ENABLE|THRESHOLD|autoincs)
@@ -242,11 +250,11 @@ module tb_mocap_wrapper;
     endtask
 
     task automatic results_ack();
-        ctrl_update(.do_reset(0), .do_ack(1));
+        axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_RESULTS_ACK);
     endtask
 
     task automatic do_reset_pulse();
-        ctrl_update(.do_reset(1), .do_ack(0));
+        axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_RESET);
     endtask
 
     // =========================================================================
@@ -576,9 +584,9 @@ module tb_mocap_wrapper;
         check32("B: VRES reset = 400", rdata[15:0], 16'd400);
         axi_read(`MOCAP_REG_CTRL, rdata);
         check32("B: CTRL reset = autoincs=1, THRESHOLD=128, ENABLE=0",
-                 rdata, 32'((128 << 8) | (1 << 4) | (1 << 3)));
+                 rdata, `MOCAP_CTRL_RESET_VALUE);
         axi_read(`MOCAP_REG_MAX_BLOBS_CFG, rdata);
-        check32("B: MAX_BLOBS_CFG = 128", rdata[15:0], 16'd128);
+        check32("B: MAX_BLOBS_CFG = MAX_BLOBS", rdata[15:0], 16'(MAX_BLOBS));
         axi_read(`MOCAP_REG_FRAME_ID, rdata);
         check32("B: FRAME_ID = 0 after reset", rdata, 32'h0);
         axi_read(`MOCAP_REG_DROPPED_FRAMES, rdata);
@@ -972,11 +980,13 @@ module tb_mocap_wrapper;
             axi_read(`MOCAP_REG_FRAME_ID, frame_id_val);
             check32("E: FRAME_ID == 1 before reset", frame_id_val, 32'd1);
 
-            // Mid-run CTRL.RESET (pulse) -- disables enable implicitly? Per
-            // spec RESET clears state but ENABLE is sticky/independent; we
-            // explicitly drop ctrl_enable_q too so streaming stops cleanly.
+            // Mid-run reset. CMD.RESET clears dynamic state but is orthogonal to
+            // the sticky CTRL.ENABLE, so to land in READY we must first push
+            // ENABLE=0 to CTRL (settings) to stop continuous re-arming, THEN
+            // pulse CMD.RESET to clear counters/buffers/FRAME_ID.
             ctrl_enable_q = 1'b0;
-            do_reset_pulse();
+            ctrl_update();      // write CTRL with ENABLE=0 (stops continuous capture)
+            do_reset_pulse();   // pulse CMD.RESET (clears dynamic state)
             repeat (400) @(posedge clk);
 
             axi_read(`MOCAP_REG_STATUS, status_val);
@@ -999,14 +1009,14 @@ module tb_mocap_wrapper;
 
             // F1: CYCLE_SNAPSHOT captures the live counter; two snapshots taken
             //     1000 clocks apart show it free-running at ~1 tick/clk.
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo1);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi1);
             snap1 = {hi1, lo1};
 
             repeat (1000) @(posedge clk);
 
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo2);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi2);
             snap2 = {hi2, lo2};
@@ -1020,7 +1030,7 @@ module tb_mocap_wrapper;
 
             // F2: the snapshot registers HOLD the captured value -- they must not
             //     track the still-advancing live counter between snapshots.
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo_hold);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi_hold);
             repeat (500) @(posedge clk);
@@ -1031,13 +1041,13 @@ module tb_mocap_wrapper;
 
             // F3: the timebase survives a soft reset (CTRL.RESET only clears frame
             //     state -- the cycle counter resets on aresetn alone).
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo1);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi1);
             snap1 = {hi1, lo1};
             do_reset_pulse();
             repeat (50) @(posedge clk);
-            axi_write(`MOCAP_REG_CTRL, `MOCAP_CTRL_CYCLE_SNAPSHOT);
+            axi_write(`MOCAP_REG_CMD, `MOCAP_CMD_CYCLE_SNAPSHOT);
             axi_read(`MOCAP_REG_CYCLE_SNAP_LO, lo2);
             axi_read(`MOCAP_REG_CYCLE_SNAP_HI, hi2);
             snap2 = {hi2, lo2};

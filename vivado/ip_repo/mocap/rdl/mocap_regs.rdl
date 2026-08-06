@@ -21,7 +21,7 @@
 // count. Up to MAX_BLOBS blobs are tracked per frame.
 //
 // Register summary (each register occupies 4 bytes of address space):
-//   0x00  CTRL            R/W   Control (W-pulses + ENABLE + AUTOINC + THRESHOLD)
+//   0x00  CTRL            R/W   Settings (ENABLE + AUTOINC + THRESHOLD; sticky)
 //   0x04  STATUS          RO    HW-driven status + published BLOB_COUNT
 //   0x08  HRES            R/W   Horizontal resolution (16b, default 640)
 //   0x0C  VRES            R/W   Vertical resolution   (16b, default 400)
@@ -45,8 +45,9 @@
 //   0x5C  DMA_CTRL        R/W   RESERVED for Arch #2
 //   0x60  CYCLE_SNAP_LO   RO    Cycle counter snapshot, low  32b
 //   0x64  CYCLE_SNAP_HI   RO    Cycle counter snapshot, high 32b
+//   0x68  CMD             WO    Doorbell single-pulses (RESET/RESULTS_ACK/CYCLE_SNAPSHOT)
 //
-// A SW reset (CTRL.RESET = 1) clears all counters, buffers, status flags, and
+// A SW reset (CMD.RESET = 1) clears all counters, buffers, status flags, and
 // DROPPED_FRAMES; it does NOT reset HRES, VRES, CTRL.THRESHOLD, the AUTOINC
 // bits, or the free-running cycle counter (which resets only on aresetn).
 // Blob field order (BLOB_COUNT_RD, BLOB_SX, BLOB_SY, BLOB_XMIN, BLOB_XMAX,
@@ -58,42 +59,54 @@ addrmap mocap_regs {
             ownership protocol. 8-bit pixels; up to MAX_BLOBS blobs per frame.";
 
     // =========================================================
-    // 0x00: Control
-    //  - RESET, RESULTS_ACK are write-only single-pulse (auto-clear)
-    //  - ENABLE, *_AUTOINC, THRESHOLD are sticky R/W
+    // 0x00: Control / settings (sticky R/W ONLY)
+    //  - All fields are sticky R/W and read back what was written.
+    //  - Single-pulse commands live in the separate CMD register (0x68) so a
+    //    per-frame ACK never disturbs THRESHOLD/ENABLE/AUTOINC (no RMW/shadow
+    //    needed on the hot path).
     // =========================================================
     reg ctrl_reg {
-        desc = "mocap_wrapper control register.";
+        desc = "mocap_wrapper settings register (sticky R/W only).";
+
+        field { hw = r; sw = rw; } ENABLE[1] = 0;
+        // Bit 0: Enable continuous capture. While 1, HW free-runs: each completed
+        //        frame publishes a buffer and raises the interrupt. While 0, HW
+        //        returns to idle (READY) after the current frame.
+
+        field { hw = r; sw = rw; } HIST_ADDR_AUTOINC[1] = 1;
+        // Bit 1: When 1, HIST_ADDR auto-increments (wrap at 0xFF) after each
+        //        HIST_DATA read. Defaults to 1.
+
+        field { hw = r; sw = rw; } BLOB_ADDR_AUTOINC[1] = 1;
+        // Bit 2: When 1, BLOB_ADDR auto-increments (wrap at MAX_BLOBS-1) after
+        //        each blob-field read. Defaults to 1.
+
+        field { hw = r; sw = rw; } THRESHOLD[15:8] = 8'd128;
+        // Bits [15:8]: Pixel threshold for blob foreground (pixel >= THRESHOLD).
+        //        Preserved across a CMD.RESET pulse.
+    };
+
+    // =========================================================
+    // 0x68: Command / doorbell (write-only single-pulse)
+    //  - Writing a 1 to a bit triggers that action for one cycle; bits
+    //    auto-clear and always read back 0. Nothing to preserve, so a full-word
+    //    write is always safe and never touches the CTRL settings.
+    // =========================================================
+    reg cmd_reg {
+        desc = "mocap_wrapper command/doorbell register (write-only single-pulse; reads 0).";
 
         field { hw = r; sw = w; singlepulse; } RESET[1] = 0;
         // Bit 0: SW reset. Clears counters, buffers, status flags, FRAME_ID and
         //        DROPPED_FRAMES. Does NOT reset HRES/VRES/THRESHOLD/AUTOINC.
 
-        field { hw = r; sw = rw; } ENABLE[1] = 0;
-        // Bit 1: Enable continuous capture. While 1, HW free-runs: each completed
-        //        frame publishes a buffer and raises the interrupt. While 0, HW
-        //        returns to idle (READY) after the current frame.
-
         field { hw = r; sw = w; singlepulse; } RESULTS_ACK[1] = 0;
-        // Bit 2: Acknowledge/consume the published buffer. Clears
+        // Bit 1: Acknowledge/consume the published buffer. Clears
         //        STATUS.FRAME_DONE_IRQ AND releases the SW-held buffer back to HW.
 
-        field { hw = r; sw = rw; } HIST_ADDR_AUTOINC[1] = 1;
-        // Bit 3: When 1, HIST_ADDR auto-increments (wrap at 0xFF) after each
-        //        HIST_DATA read. Defaults to 1.
-
-        field { hw = r; sw = rw; } BLOB_ADDR_AUTOINC[1] = 1;
-        // Bit 4: When 1, BLOB_ADDR auto-increments (wrap at MAX_BLOBS-1) after
-        //        each blob-field read. Defaults to 1.
-
         field { hw = r; sw = w; singlepulse; } CYCLE_SNAPSHOT[1] = 0;
-        // Bit 5: Snapshot the free-running 64-bit cycle counter into
+        // Bit 2: Snapshot the free-running 64-bit cycle counter into
         //        CYCLE_SNAP_LO / CYCLE_SNAP_HI. Single-pulse; the captured value
         //        holds until the next snapshot, so LO/HI read back atomically.
-
-        field { hw = r; sw = rw; } THRESHOLD[15:8] = 8'd128;
-        // Bits [15:8]: Pixel threshold for blob foreground (pixel >= THRESHOLD).
-        //        Preserved across SW reset.
     };
 
     // =========================================================
@@ -308,4 +321,5 @@ addrmap mocap_regs {
     dma_ctrl_reg       DMA_CTRL       @ 0x05C;
     cycle_snap_lo_reg  CYCLE_SNAP_LO  @ 0x060;
     cycle_snap_hi_reg  CYCLE_SNAP_HI  @ 0x064;
+    cmd_reg            CMD            @ 0x068;
 };

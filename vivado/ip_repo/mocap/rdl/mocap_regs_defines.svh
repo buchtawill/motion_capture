@@ -5,7 +5,7 @@
 // SV module or testbench that references these registers.
 //
 // Keep in sync with mocap_regs.rdl. The generated regblock uses a 7-bit AXI4-Lite
-// byte address (region size 0x68).
+// byte address (region size 0x6C).
 
 `ifndef MOCAP_REGS_DEFINES_SVH
 `define MOCAP_REGS_DEFINES_SVH
@@ -37,33 +37,40 @@
 `define MOCAP_REG_DMA_CTRL       7'h5C
 `define MOCAP_REG_CYCLE_SNAP_LO  7'h60
 `define MOCAP_REG_CYCLE_SNAP_HI  7'h64
+`define MOCAP_REG_CMD            7'h68
 
 // -----------------------------------------------------------------------------
-// CTRL (0x00) bit positions
-//   - RESET / RESULTS_ACK are write-only singlepulse (auto-clear).
-//   - ENABLE / *_AUTOINC / THRESHOLD are sticky R/W.
+// CTRL (0x00) bit positions -- sticky R/W settings ONLY
+//   - ENABLE / *_AUTOINC / THRESHOLD are sticky R/W and read back as written.
+//   - Single-pulse commands moved to CMD (0x68); see below.
 // -----------------------------------------------------------------------------
-`define MOCAP_CTRL_RESET_B             0
-`define MOCAP_CTRL_ENABLE_B            1
-`define MOCAP_CTRL_RESULTS_ACK_B       2
-`define MOCAP_CTRL_HIST_ADDR_AUTOINC_B 3
-`define MOCAP_CTRL_BLOB_ADDR_AUTOINC_B 4
-`define MOCAP_CTRL_CYCLE_SNAPSHOT_B    5
+`define MOCAP_CTRL_ENABLE_B            0
+`define MOCAP_CTRL_HIST_ADDR_AUTOINC_B 1
+`define MOCAP_CTRL_BLOB_ADDR_AUTOINC_B 2
 `define MOCAP_CTRL_THRESHOLD_LSB       8
 `define MOCAP_CTRL_THRESHOLD_WIDTH     8
 
 // One-hot masks for convenience
-`define MOCAP_CTRL_RESET             (32'h1 << `MOCAP_CTRL_RESET_B)
 `define MOCAP_CTRL_ENABLE            (32'h1 << `MOCAP_CTRL_ENABLE_B)
-`define MOCAP_CTRL_RESULTS_ACK       (32'h1 << `MOCAP_CTRL_RESULTS_ACK_B)
 `define MOCAP_CTRL_HIST_ADDR_AUTOINC (32'h1 << `MOCAP_CTRL_HIST_ADDR_AUTOINC_B)
 `define MOCAP_CTRL_BLOB_ADDR_AUTOINC (32'h1 << `MOCAP_CTRL_BLOB_ADDR_AUTOINC_B)
-`define MOCAP_CTRL_CYCLE_SNAPSHOT    (32'h1 << `MOCAP_CTRL_CYCLE_SNAPSHOT_B)
 `define MOCAP_CTRL_THRESHOLD(v)      ((32'h0 | ((v) & 32'hFF)) << `MOCAP_CTRL_THRESHOLD_LSB)
 
-// CTRL reset value (sticky bits only: both AUTOINCs = 1, THRESHOLD = 128)
+// CTRL reset value (both AUTOINCs = 1, THRESHOLD = 128)
 `define MOCAP_CTRL_RESET_VALUE \
     (`MOCAP_CTRL_HIST_ADDR_AUTOINC | `MOCAP_CTRL_BLOB_ADDR_AUTOINC | `MOCAP_CTRL_THRESHOLD(8'd128))
+
+// -----------------------------------------------------------------------------
+// CMD (0x68) bit positions -- write-only single-pulse (auto-clear, reads 0)
+//   Writing a 1 triggers the action for one cycle without disturbing CTRL.
+// -----------------------------------------------------------------------------
+`define MOCAP_CMD_RESET_B          0
+`define MOCAP_CMD_RESULTS_ACK_B    1
+`define MOCAP_CMD_CYCLE_SNAPSHOT_B 2
+
+`define MOCAP_CMD_RESET          (32'h1 << `MOCAP_CMD_RESET_B)
+`define MOCAP_CMD_RESULTS_ACK    (32'h1 << `MOCAP_CMD_RESULTS_ACK_B)
+`define MOCAP_CMD_CYCLE_SNAPSHOT (32'h1 << `MOCAP_CMD_CYCLE_SNAPSHOT_B)
 
 // -----------------------------------------------------------------------------
 // STATUS (0x04) bit positions (all RO, HW-driven)

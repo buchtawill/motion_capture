@@ -42,8 +42,8 @@
 import mocap_regs_pkg::*;
 
 module mocap_top #(
-    parameter integer MAX_BLOBS        = 128,
-    parameter integer MAX_RUNS_PER_ROW = 640,
+    parameter integer MAX_BLOBS        = 64,
+    parameter integer MAX_RUNS_PER_ROW = 64, // worst case = HRES/2, every other pixel
     parameter integer AXIS_DATA_WIDTH  = 32,
     parameter integer AXIS_TUSER_WIDTH = 1,
     parameter integer AXIS_TKEEP_WIDTH = AXIS_DATA_WIDTH / 8
@@ -55,7 +55,7 @@ module mocap_top #(
     input  wire                        aresetn,
 
     // -------------------------------------------------------------------------
-    // AXI4-Lite Slave (7-bit byte address; region size 0x68)
+    // AXI4-Lite Slave (7-bit byte address; region size 0x6C)
     // -------------------------------------------------------------------------
     input  wire [6:0]                  s_axi_awaddr,
     input  wire [2:0]                  s_axi_awprot,
@@ -114,9 +114,9 @@ module mocap_top #(
     mocap_regs__out_t hwif_out;
 
     // CTRL / config aliases
-    wire        rst_all    = hwif_out.CTRL.RESET.value;
+    wire        rst_all    = hwif_out.CMD.RESET.value;
     wire        ctrl_enable= hwif_out.CTRL.ENABLE.value;
-    wire        ack_pulse  = hwif_out.CTRL.RESULTS_ACK.value;
+    wire        ack_pulse  = hwif_out.CMD.RESULTS_ACK.value;
     wire [7:0]  threshold  = hwif_out.CTRL.THRESHOLD.value;
     wire [15:0] hres       = hwif_out.HRES.HRES.value;
     wire [15:0] vres       = hwif_out.VRES.VRES.value;
@@ -314,7 +314,13 @@ module mocap_top #(
     logic        overrun_sticky_q;
     logic [7:0]  published_blob_count_q [0:1];
     logic [31:0] published_pixel_sum_q  [0:1];
-    logic [159:0] wrapper_blob_buf      [0:1][0:MAX_BLOBS-1];
+    // Blob double-buffer, flattened to a 1D memory so it infers a simple
+    // dual-port BRAM. A 3D/[bank][idx] unpacked array with different bank
+    // indices on the write vs read port is NOT inferred as BRAM by Vivado
+    // (Synth 8-11357 -> 40960 registers). Address = {bank, idx[6:0]}; requires
+    // MAX_BLOBS to be a power of two (128 here).
+    localparam int BLOB_IDX_W = $clog2(MAX_BLOBS);
+    logic [159:0] wrapper_blob_buf [0:2*MAX_BLOBS-1];
 
     assign frame_done_irq_o = frame_done_irq_q;
 
@@ -485,7 +491,7 @@ module mocap_top #(
 
     always_ff @(posedge aclk) begin
         if (fc_state == FC_COPY && copy_prev_valid_q)
-            wrapper_blob_buf[write_bank_q][copy_addr_prev_q[6:0]] <= result_rd_data_w;
+            wrapper_blob_buf[{write_bank_q, copy_addr_prev_q[BLOB_IDX_W-1:0]}] <= result_rd_data_w;
     end
 
     // =========================================================================
@@ -546,7 +552,7 @@ module mocap_top #(
     end
 
     // =========================================================================
-    // Sticky error/overflow bits (cleared only by RTL reset or CTRL.RESET)
+    // Sticky error/overflow bits (cleared only by RTL reset or CMD.RESET)
     // =========================================================================
     logic hist_fifo_err_sticky, blob_overflow_sticky;
 
@@ -565,9 +571,9 @@ module mocap_top #(
     // =========================================================================
     // Free-running 64-bit cycle counter + SW-triggered snapshot
     //   - cycle_counter_q counts every aclk from hardware reset (aresetn). It is
-    //     intentionally NOT cleared by CTRL.RESET so it stays a monotonic
+    //     intentionally NOT cleared by CMD.RESET so it stays a monotonic
     //     timebase across soft resets.
-    //   - A CTRL.CYCLE_SNAPSHOT pulse atomically captures it into cycle_snap_q,
+    //   - A CMD.CYCLE_SNAPSHOT pulse atomically captures it into cycle_snap_q,
     //     which SW reads back via CYCLE_SNAP_LO / CYCLE_SNAP_HI. Because the snap
     //     regs only change on the pulse, the two 32-bit reads never tear.
     // =========================================================================
@@ -581,13 +587,24 @@ module mocap_top #(
 
     always_ff @(posedge aclk) begin
         if (!aresetn)                              cycle_snap_q <= 64'h0;
-        else if (hwif_out.CTRL.CYCLE_SNAPSHOT.value) cycle_snap_q <= cycle_counter_q;
+        else if (hwif_out.CMD.CYCLE_SNAPSHOT.value) cycle_snap_q <= cycle_counter_q;
     end
 
     // =========================================================================
     // Register glue (hwif_in)
     // =========================================================================
-    wire [159:0] blob_rd_rec = wrapper_blob_buf[read_bank_q][hwif_out.BLOB_ADDR.BLOB_ADDR.value[6:0]];
+    // Registered (synchronous) read of the blob double-buffer. A combinational
+    // read here would force the whole 2x128x160b array into flip-flops plus a
+    // 256:1 x160b mux (~40k FFs + tens of thousands of F7/F8 mux LUTs). Register
+    // the read so it maps to a simple-dual-port BRAM (write port below at
+    // {write_bank_q, copy_addr}, this read port at {read_bank_q, BLOB_ADDR}).
+    // The one-cycle read latency is absorbed by AXI-Lite's AR->R phase gap and by
+    // BLOB_ADDR being held stable across a blob's field reads -- the exact scheme
+    // the histogram BRAM readback (hist_ram_data) already relies on.
+    logic [159:0] blob_rd_rec;
+    always_ff @(posedge aclk) begin
+        blob_rd_rec <= wrapper_blob_buf[{read_bank_q, hwif_out.BLOB_ADDR.BLOB_ADDR.value[BLOB_IDX_W-1:0]}];
+    end
 
     always_comb begin
         // ---- STATUS ----
