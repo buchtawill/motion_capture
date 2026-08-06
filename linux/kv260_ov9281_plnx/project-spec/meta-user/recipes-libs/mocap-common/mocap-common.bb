@@ -7,7 +7,7 @@
 # needed since the recipe sysroot's includedir is on the default search path.
 #
 
-SUMMARY = "Common header-only code for the mocap apps (argparse, stb, pipeline, auto-exposure)"
+SUMMARY = "Common header-only code for the mocap apps (argparse, stb, pipeline, auto-exposure, ISP/mocap UIO drivers)"
 SECTION = "PETALINUX/libs"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
@@ -18,6 +18,9 @@ SRC_URI = "file://argparse.hpp \
            file://auto_exposure.hpp \
            file://isp_regs.h \
            file://isp_stats.hpp \
+           file://mocap_regs.h \
+           file://mocap_pipeline.hpp \
+           file://blob_detect.hpp \
           "
 
 S = "${WORKDIR}"
@@ -30,6 +33,9 @@ do_install() {
 	install -m 0644 ${S}/auto_exposure.hpp ${D}${includedir}/mocap/
 	install -m 0644 ${S}/isp_regs.h ${D}${includedir}/mocap/
 	install -m 0644 ${S}/isp_stats.hpp ${D}${includedir}/mocap/
+	install -m 0644 ${S}/mocap_regs.h ${D}${includedir}/mocap/
+	install -m 0644 ${S}/mocap_pipeline.hpp ${D}${includedir}/mocap/
+	install -m 0644 ${S}/blob_detect.hpp ${D}${includedir}/mocap/
 }
 
 # Header-only: the staged headers belong in the -dev package, and the main

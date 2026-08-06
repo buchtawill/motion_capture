@@ -57,7 +57,9 @@
 
 #include <mocap/argparse.hpp>
 #include <mocap/auto_exposure.hpp>
+#include <mocap/blob_detect.hpp>
 #include <mocap/isp_stats.hpp>
+#include <mocap/mocap_pipeline.hpp>
 #include <mocap/ov9281_pipeline.hpp>
 
 using namespace mocap;
@@ -110,6 +112,14 @@ struct DrmDisplay {
     PlaneProps pp;
     uint32_t mode_blob_id = 0;
 
+    // Blob-box overlay: the RGB primary/graphics plane, composited OVER the
+    // video by the DPSUB blender. When a box overlay is active we repurpose this
+    // plane (instead of hiding it) to carry an ARGB8888 buffer of red box
+    // outlines, and set its global alpha opaque so per-pixel alpha shows only the
+    // boxes over the video. box_fb_id == 0 keeps the legacy "hide primary" path.
+    PlaneProps box_pp;         // FB/CRTC/SRC prop ids on the primary plane
+    uint32_t box_fb_id = 0;    // ARGB8888 overlay framebuffer (0 = disabled)
+
     // Shared constant-0x80 chroma buffer (one for all frames).
     uint32_t chroma_handle = 0;
     uint32_t chroma_stride = 0;
@@ -122,6 +132,88 @@ struct DrmDisplay {
 #define DRM_PLANE_TYPE_PRIMARY 1
 #define DRM_PLANE_TYPE_CURSOR 2
 #endif
+
+// ---------------------------------------------------------------------------
+// Blob-box overlay: a CPU-rendered ARGB8888 dumb buffer on the primary/graphics
+// plane. Fully transparent except red box outlines drawn at detected-blob
+// bounding boxes. Colors are 0xAARRGGBB packed (little-endian ARGB8888): opaque
+// red = 0xFFFF0000. The capture is written 1:1 into the top-left of the 1920x1080
+// scanout buffer, so blob (sensor-space) coordinates map straight to overlay
+// pixels -- no scaling.
+struct BoxOverlay {
+    uint32_t handle = 0, fb_id = 0;
+    uint8_t *map = nullptr;
+    size_t size = 0;
+    uint32_t stride = 0; // bytes per row
+    unsigned w = 0, h = 0;
+};
+
+static BoxOverlay drm_make_box_overlay(DrmDisplay &d, unsigned w, unsigned h) {
+    BoxOverlay o;
+    o.w = w;
+    o.h = h;
+    drm_mode_create_dumb creq{};
+    creq.width = w;
+    creq.height = h;
+    creq.bpp = 32;
+    if (drmIoctl(d.fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) != 0)
+        fail("DRM_IOCTL_MODE_CREATE_DUMB (box overlay)");
+    o.handle = creq.handle;
+    o.stride = creq.pitch;
+    o.size = creq.size;
+    drm_mode_map_dumb mreq{};
+    mreq.handle = o.handle;
+    if (drmIoctl(d.fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) != 0)
+        fail("DRM_IOCTL_MODE_MAP_DUMB (box overlay)");
+    o.map = static_cast<uint8_t *>(mmap(nullptr, o.size, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, d.fd, mreq.offset));
+    if (o.map == MAP_FAILED)
+        fail("mmap box overlay");
+    std::memset(o.map, 0, o.size); // start fully transparent
+    uint32_t handles[4] = {o.handle, 0, 0, 0};
+    uint32_t pitches[4] = {o.stride, 0, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(d.fd, w, h, DRM_FORMAT_ARGB8888, handles, pitches, offsets,
+                      &o.fb_id, 0) != 0)
+        fail("drmModeAddFB2 ARGB8888 (box overlay) -- does the graphics plane "
+             "support ARGB8888?");
+    return o;
+}
+
+static inline void box_hline(BoxOverlay &o, int x0, int x1, int y, uint32_t c) {
+    if (y < 0 || y >= static_cast<int>(o.h))
+        return;
+    x0 = std::max(0, x0);
+    x1 = std::min(static_cast<int>(o.w) - 1, x1);
+    uint32_t *row =
+        reinterpret_cast<uint32_t *>(o.map + static_cast<size_t>(y) * o.stride);
+    for (int x = x0; x <= x1; ++x)
+        row[x] = c;
+}
+
+static inline void box_vline(BoxOverlay &o, int x, int y0, int y1, uint32_t c) {
+    if (x < 0 || x >= static_cast<int>(o.w))
+        return;
+    y0 = std::max(0, y0);
+    y1 = std::min(static_cast<int>(o.h) - 1, y1);
+    for (int y = y0; y <= y1; ++y)
+        reinterpret_cast<uint32_t *>(o.map +
+                                     static_cast<size_t>(y) * o.stride)[x] = c;
+}
+
+// Draw a `thickness`-pixel rectangle outline (inclusive corners).
+static void box_draw_rect(BoxOverlay &o, int x0, int y0, int x1, int y1,
+                          int thickness, uint32_t c) {
+    for (int t = 0; t < thickness; ++t) {
+        box_hline(o, x0, x1, y0 + t, c);
+        box_hline(o, x0, x1, y1 - t, c);
+        box_vline(o, x0 + t, y0, y1, c);
+        box_vline(o, x1 - t, y0, y1, c);
+    }
+}
+
+// Clear all boxes (back to fully transparent) before redrawing a new frame.
+static inline void box_clear(BoxOverlay &o) { std::memset(o.map, 0, o.size); }
 
 // Look up a named property on a DRM object; returns its current value (or
 // UINT64_MAX if absent) and, via out_id, its (driver-global) property id.
@@ -426,6 +518,21 @@ static void drm_cache_props(DrmDisplay &d) {
     if (d.primary_plane_id)
         need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "alpha",
              &d.prop_primary_alpha);
+    // When we drive the box overlay, we also commit FB/placement on the primary
+    // plane -- cache those prop ids too (only if a primary plane exists).
+    if (d.primary_plane_id) {
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &d.box_pp.fb_id);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID",
+             &d.box_pp.crtc_id);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X", &d.box_pp.crtc_x);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y", &d.box_pp.crtc_y);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W", &d.box_pp.crtc_w);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H", &d.box_pp.crtc_h);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X", &d.box_pp.src_x);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y", &d.box_pp.src_y);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W", &d.box_pp.src_w);
+        need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H", &d.box_pp.src_h);
+    }
     need(d.plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &d.pp.fb_id);
     need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID", &d.pp.crtc_id);
     need(d.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X", &d.pp.crtc_x);
@@ -450,15 +557,40 @@ static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
     drmModeAtomicAddProperty(req, d.crtc_id, d.prop_crtc_mode_id, d.mode_blob_id);
     drmModeAtomicAddProperty(req, d.crtc_id, d.prop_crtc_active, 1);
     drmModeAtomicAddProperty(req, d.conn_id, d.prop_conn_crtc_id, d.crtc_id);
-    if (d.primary_plane_id && d.primary_plane_id != d.plane_id) {
-        drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.fb_id, 0);
-        drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.crtc_id, 0);
-    }
-    // Make the graphics layer fully transparent so the video overlay shows
-    // through the blender (the global-alpha default hides it otherwise).
-    if (d.prop_primary_alpha)
-        drmModeAtomicAddProperty(req, d.primary_plane_id, d.prop_primary_alpha, 0);
     const uint64_t w = d.mode.hdisplay, h = d.mode.vdisplay;
+    const bool box_active =
+        d.box_fb_id != 0 && d.primary_plane_id && d.primary_plane_id != d.plane_id;
+    if (box_active) {
+        // Repurpose the graphics/primary plane as the ARGB8888 box overlay,
+        // full-CRTC 1:1, composited OVER the video. Global alpha opaque; the
+        // ARGB per-pixel alpha (0 everywhere except the red box outlines) is what
+        // lets the video show through between boxes.
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.fb_id,
+                                 d.box_fb_id);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_id,
+                                 d.crtc_id);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_x, 0);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_y, 0);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_w, w);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_h, h);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_x, 0);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_y, 0);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_w, w << 16);
+        drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_h, h << 16);
+        if (d.prop_primary_alpha)
+            drmModeAtomicAddProperty(req, d.primary_plane_id,
+                                     d.prop_primary_alpha, 0xFFFF);
+    } else {
+        if (d.primary_plane_id && d.primary_plane_id != d.plane_id) {
+            drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.fb_id, 0);
+            drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.crtc_id, 0);
+        }
+        // Make the graphics layer fully transparent so the video overlay shows
+        // through the blender (the global-alpha default hides it otherwise).
+        if (d.prop_primary_alpha)
+            drmModeAtomicAddProperty(req, d.primary_plane_id, d.prop_primary_alpha,
+                                     0);
+    }
     drmModeAtomicAddProperty(req, d.plane_id, d.pp.fb_id, fb);
     drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_id, d.crtc_id);
     drmModeAtomicAddProperty(req, d.plane_id, d.pp.crtc_x, 0);
@@ -678,6 +810,19 @@ int main(int argc, char *argv[]) {
         .implicit_value(true)
         .help("DRM sanity mode: display static grayscale bars via the NV12 "
               "overlay path, no camera/pipeline (isolates DRM from capture)");
+    program.add_argument("--no-blobs")
+        .default_value(false)
+        .implicit_value(true)
+        .help("disable the mocap blob-detector red-box overlay (on by default "
+              "when the mocap UIO device is present)");
+    program.add_argument("--threshold")
+        .default_value(128u)
+        .scan<'u', unsigned>()
+        .help("blob foreground threshold (0-255; pixel >= threshold)");
+    program.add_argument("--box-thickness")
+        .default_value(3u)
+        .scan<'u', unsigned>()
+        .help("red box outline thickness in pixels");
 
     try {
         program.parse_args(argc, argv);
@@ -708,6 +853,9 @@ int main(int argc, char *argv[]) {
     const bool enable_isp = program.get<bool>("--isp");
     const bool quiet_stats = program.get<bool>("--quiet-stats");
     const bool test_mode = program.get<bool>("--test");
+    const bool blobs_disabled = program.get<bool>("--no-blobs");
+    const unsigned blob_threshold = program.get<unsigned>("--threshold");
+    const unsigned box_thickness = program.get<unsigned>("--box-thickness");
 
     if (!mode_arg.empty()) {
         const SensorMode *m = find_mode(mode_arg);
@@ -923,6 +1071,53 @@ int main(int argc, char *argv[]) {
         ae = AutoExposure::create(sensor_path, aecfg, isp.get());
     }
 
+    // --- mocap blob detector + red-box overlay ------------------------------
+    //
+    // IMPORTANT: the mocap_wrapper block is INLINE on the CSI->VDMA stream and
+    // gates passthrough on CTRL.ENABLE -- run_extractor only asserts s_ready (and
+    // thus drains the input FIFO) while the blob core is enabled and framed at
+    // the correct HRES/VRES. So we MUST arm the block whenever it is present, or
+    // no video reaches VDMA at all. --no-blobs therefore only suppresses the
+    // overlay; it does NOT skip arming. (When the mocap UIO is absent we assume a
+    // transparent/older bitstream and let video flow unchanged.)
+    //
+    // Blob path: the block detects blobs on exactly the frames we display. We add
+    // its frame-done IRQ fd to the render poll() set; on each mocap frame we read
+    // the published bounding boxes, ACK the buffer, and redraw the ARGB overlay.
+    // The overlay plane FB is committed once (at modeset); we update its pixels
+    // in place each frame (thin red lines -- any tearing is imperceptible).
+    if (blob_threshold > 255)
+        die("--threshold must be 0-255");
+    std::unique_ptr<MocapPipeline> mocap_pipe;
+    std::unique_ptr<BlobDetector> blobdet;
+    BoxOverlay box{};
+    int mocap_fd = -1;
+    std::vector<Blob> blob_list;
+    mocap_pipe = MocapPipeline::discover();
+    if (mocap_pipe) {
+        // Arm for video passthrough (mandatory) at the capture resolution.
+        mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
+                        static_cast<uint8_t>(blob_threshold));
+        std::cout << "mocap pipeline armed " << gw << "x" << gh << ", threshold "
+                  << blob_threshold << ", MAX_BLOBS " << mocap_pipe->max_blobs()
+                  << "\n";
+        if (!blobs_disabled) {
+            blobdet.reset(new BlobDetector(*mocap_pipe));
+            box = drm_make_box_overlay(d, DISP_W, DISP_H);
+            d.box_fb_id = box.fb_id; // makes the modeset enable the overlay
+            mocap_fd = mocap_pipe->uio_fd();
+            mocap_pipe->arm_irq(); // enable the first frame-done interrupt
+            std::cout << "Blob overlay ON, box thickness " << box_thickness
+                      << "\n";
+        } else {
+            std::cout << "Blob overlay OFF (--no-blobs); block armed for video "
+                         "passthrough only\n";
+        }
+    } else {
+        std::cerr << "warning: no mocap UIO device found; assuming a transparent "
+                     "pipeline (no blob boxes, video passes through)\n";
+    }
+
     // --- render loop --------------------------------------------------------
     //
     // Buffer states, tracked by index:
@@ -979,8 +1174,10 @@ int main(int argc, char *argv[]) {
     auto last_report = std::chrono::steady_clock::now();
 
     while (!g_quit) {
-        pollfd pfds[2] = {{vfd, POLLIN, 0}, {d.fd, POLLIN, 0}};
-        int pr = poll(pfds, 2, 500);
+        pollfd pfds[3] = {
+            {vfd, POLLIN, 0}, {d.fd, POLLIN, 0}, {mocap_fd, POLLIN, 0}};
+        const nfds_t nfds = (mocap_fd >= 0) ? 3 : 2;
+        int pr = poll(pfds, nfds, 500);
         if (pr == -1) {
             if (errno == EINTR)
                 continue;
@@ -988,6 +1185,19 @@ int main(int argc, char *argv[]) {
         }
         if (pr == 0)
             continue;
+
+        // New mocap blob results (frame-done IRQ). Read the published bounding
+        // boxes, release the buffer, re-arm the IRQ, and redraw the overlay.
+        if (mocap_fd >= 0 && (pfds[2].revents & POLLIN)) {
+            mocap_pipe->drain_irq();      // consume the UIO event
+            blobdet->read_all(blob_list); // published bank (held until ack)
+            mocap_pipe->ack();            // release buffer back to HW
+            mocap_pipe->arm_irq();        // re-enable next frame-done IRQ
+            box_clear(box);
+            for (const Blob &b : blob_list)
+                box_draw_rect(box, b.xmin, b.ymin, b.xmax, b.ymax,
+                              static_cast<int>(box_thickness), 0xFFFF0000u);
+        }
 
         // DRM page-flip completion.
         if (pfds[1].revents & POLLIN) {
@@ -1085,9 +1295,16 @@ int main(int argc, char *argv[]) {
     if (xioctl(vfd, VIDIOC_STREAMOFF, &type_int) == -1)
         std::cerr << "warning: VIDIOC_STREAMOFF: " << strerror(errno) << "\n";
 
+    // Stop continuous blob capture (settings preserved on the block).
+    if (mocap_pipe)
+        mocap_pipe->disable();
+
     // Turn our overlay plane off so it stops covering the console.
     if (d.plane_id)
         drmModeSetPlane(d.fd, d.plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    // Turn the box overlay (primary plane) off too.
+    if (d.box_fb_id && d.primary_plane_id)
+        drmModeSetPlane(d.fd, d.primary_plane_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     if (d.mode_blob_id)
         drmModeDestroyPropertyBlob(d.fd, d.mode_blob_id);
 
@@ -1118,12 +1335,24 @@ int main(int argc, char *argv[]) {
         dreq.handle = d.chroma_handle;
         drmIoctl(d.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
     }
+    // Free the ARGB box overlay.
+    if (box.fb_id)
+        drmModeRmFB(d.fd, box.fb_id);
+    if (box.map)
+        munmap(box.map, box.size);
+    if (box.handle) {
+        drm_mode_destroy_dumb dreq{};
+        dreq.handle = box.handle;
+        drmIoctl(d.fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+    }
     if (d.master)
         drmDropMaster(d.fd);
     close(d.fd);
 
     ae.reset();
     isp.reset();
+    blobdet.reset();
+    mocap_pipe.reset();
     close(vfd);
     std::cout << "Stopped.\n";
     return 0;
