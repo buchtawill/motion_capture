@@ -109,6 +109,8 @@ struct DrmDisplay {
     uint32_t prop_crtc_mode_id = 0, prop_crtc_active = 0;
     uint32_t prop_conn_crtc_id = 0;
     uint32_t prop_primary_alpha = 0; // global-alpha prop on the graphics plane
+    uint64_t primary_alpha_max = 0xFFFF; // "opaque" value for that prop (its range
+                                         // max; DPSUB uses 0..255, not 0..0xFFFF)
     PlaneProps pp;
     uint32_t mode_blob_id = 0;
 
@@ -515,9 +517,20 @@ static void drm_cache_props(DrmDisplay &d) {
     // layer; global alpha defaults to fully-opaque graphics, so the video layer
     // is invisible until we set the graphics plane's "alpha" to 0. This prop
     // lives on the PRIMARY plane, not our overlay (driver: zynqmp_disp.c).
-    if (d.primary_plane_id)
+    if (d.primary_plane_id) {
         need(d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "alpha",
              &d.prop_primary_alpha);
+        // Capture the alpha prop's range max = its "opaque" value. The Zynq
+        // DPSUB global-alpha is 8-bit (0..255), NOT the 16-bit DRM standard
+        // (0..0xFFFF): committing 0xFFFF exceeds the range and the atomic ioctl
+        // rejects it with EINVAL *before* the check phase. Use the real max.
+        drmModePropertyRes *ap = drmModeGetProperty(d.fd, d.prop_primary_alpha);
+        if (ap) {
+            if ((ap->flags & DRM_MODE_PROP_RANGE) && ap->count_values >= 2)
+                d.primary_alpha_max = ap->values[1];
+            drmModeFreeProperty(ap);
+        }
+    }
     // When we drive the box overlay, we also commit FB/placement on the primary
     // plane -- cache those prop ids too (only if a primary plane exists).
     if (d.primary_plane_id) {
@@ -562,9 +575,14 @@ static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
         d.box_fb_id != 0 && d.primary_plane_id && d.primary_plane_id != d.plane_id;
     if (box_active) {
         // Repurpose the graphics/primary plane as the ARGB8888 box overlay,
-        // full-CRTC 1:1, composited OVER the video. Global alpha opaque; the
-        // ARGB per-pixel alpha (0 everywhere except the red box outlines) is what
-        // lets the video show through between boxes.
+        // full-CRTC 1:1, composited OVER the video. The Zynq DPSUB planes are
+        // created can_position=false, so the plane MUST span the whole CRTC at
+        // (0,0) -- a sub-region (e.g. capture-sized) fails the atomic check with
+        // EINVAL. So the box FB is full-screen (1920x1080 ARGB = 8 MB); size CMA
+        // accordingly (cma=256M in bootargs). Global alpha opaque; the ARGB
+        // per-pixel alpha (0 except the red box outlines) lets the video show
+        // through between boxes. Boxes are drawn only in the top-left capture
+        // region, which is where all blobs live.
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.fb_id,
                                  d.box_fb_id);
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_id,
@@ -579,7 +597,7 @@ static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_h, h << 16);
         if (d.prop_primary_alpha)
             drmModeAtomicAddProperty(req, d.primary_plane_id,
-                                     d.prop_primary_alpha, 0xFFFF);
+                                     d.prop_primary_alpha, d.primary_alpha_max);
     } else {
         if (d.primary_plane_id && d.primary_plane_id != d.plane_id) {
             drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.fb_id, 0);
@@ -1047,8 +1065,12 @@ int main(int argc, char *argv[]) {
     // arming first (block sits in WAIT_SOF with an empty FIFO) the very first
     // streamed frame is captured and passed through cleanly from beat 0. So we
     // MUST arm whenever the block is present; --no-blobs only suppresses the
-    // overlay, it does NOT skip arming. (No mocap UIO => assume a transparent/
-    // older bitstream and let video flow unchanged.)
+    // overlay, it does NOT skip arming. The mocap UIO device is REQUIRED: the
+    // inline block gates video passthrough on CTRL.ENABLE, so if we can't find
+    // and arm it, no frames ever reach VDMA (the CSI-2 RX line buffer just
+    // fills) -- a missing UIO device is a hard error, not a transparent
+    // fallback. Check that uio_pdrv_genirq is bound and the DT node's
+    // compatible is "generic-uio" (see mocap-pipeline-overlay.dts).
     //
     // Blob path: the block detects blobs on exactly the frames we display. We add
     // its frame-done IRQ fd to the render poll() set; on each mocap frame we read
@@ -1063,29 +1085,34 @@ int main(int argc, char *argv[]) {
     int mocap_fd = -1;
     std::vector<Blob> blob_list;
     mocap_pipe = MocapPipeline::discover();
-    if (mocap_pipe) {
-        // Arm for video passthrough (mandatory) at the capture resolution,
-        // BEFORE streaming starts so framing is clean from the first frame.
-        mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
-                        static_cast<uint8_t>(blob_threshold));
-        std::cout << "mocap pipeline armed " << gw << "x" << gh << ", threshold "
-                  << blob_threshold << ", MAX_BLOBS " << mocap_pipe->max_blobs()
-                  << "\n";
-        if (!blobs_disabled) {
-            blobdet.reset(new BlobDetector(*mocap_pipe));
-            box = drm_make_box_overlay(d, DISP_W, DISP_H);
-            d.box_fb_id = box.fb_id; // makes the modeset enable the overlay
-            mocap_fd = mocap_pipe->uio_fd();
-            mocap_pipe->arm_irq(); // enable the first frame-done interrupt
-            std::cout << "Blob overlay ON, box thickness " << box_thickness
-                      << "\n";
-        } else {
-            std::cout << "Blob overlay OFF (--no-blobs); block armed for video "
-                         "passthrough only\n";
-        }
+    if (!mocap_pipe)
+        die("no mocap UIO device found (searched /sys/class/uio/*/name for "
+            "'mocap_wrapper'). The inline mocap block gates video on "
+            "CTRL.ENABLE, so it MUST be present and armed or no frames reach "
+            "VDMA. Check: (1) 'lsmod | grep uio_pdrv_genirq' is loaded; "
+            "(2) the DT node compatible is \"generic-uio\" (a stale .dtbo "
+            "still reading \"xlnx,mocap-wrapper-1.0\" will not bind).");
+    // Arm for video passthrough (mandatory) at the capture resolution,
+    // BEFORE streaming starts so framing is clean from the first frame.
+    mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
+                    static_cast<uint8_t>(blob_threshold));
+    std::cout << "mocap pipeline armed " << gw << "x" << gh << ", threshold "
+              << blob_threshold << ", MAX_BLOBS " << mocap_pipe->max_blobs()
+              << "\n";
+    if (!blobs_disabled) {
+        blobdet.reset(new BlobDetector(*mocap_pipe));
+        // Full-screen ARGB overlay: the DPSUB graphics plane is can_position=
+        // false and must span the whole CRTC (see drm_atomic_modeset), so it
+        // can't be shrunk to the capture region -- needs cma=256M for the 8 MB
+        // buffer. Boxes are only ever drawn in the top-left capture area.
+        box = drm_make_box_overlay(d, DISP_W, DISP_H);
+        d.box_fb_id = box.fb_id; // makes the modeset enable the overlay
+        mocap_fd = mocap_pipe->uio_fd();
+        mocap_pipe->arm_irq(); // enable the first frame-done interrupt
+        std::cout << "Blob overlay ON, box thickness " << box_thickness << "\n";
     } else {
-        std::cerr << "warning: no mocap UIO device found; assuming a transparent "
-                     "pipeline (no blob boxes, video passes through)\n";
+        std::cout << "Blob overlay OFF (--no-blobs); block armed for video "
+                     "passthrough only\n";
     }
 
     // Start the camera feed now that the inline mocap block is armed and framed.

@@ -48,4 +48,4 @@ deploy-boot:
 
 clean:
 	petalinux-build -x distclean
-	rm -rf /tftpboot/*
+	rm -rf /tftpboot/* ./app_binaries
