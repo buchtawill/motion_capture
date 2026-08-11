@@ -59,11 +59,12 @@ module row_merger #(
     typedef enum logic [2:0] {
         RM_IDLE     = 3'd0,
         RM_ACCEPT   = 3'd1,
-        RM_SCAN     = 3'd2,
-        RM_ALLOC    = 3'd3,
-        RM_EMIT     = 3'd4,
-        RM_MERGE    = 3'd5,
-        RM_ROW_SWAP = 3'd6
+        RM_SCAN_RD  = 3'd2,
+        RM_SCAN_CMP = 3'd3,
+        RM_ALLOC    = 3'd4,
+        RM_EMIT     = 3'd5,
+        RM_MERGE    = 3'd6,
+        RM_ROW_SWAP = 3'd7
     } rm_state_t;
 
     rm_state_t state, state_next;
@@ -79,6 +80,18 @@ module row_merger #(
 
     logic [RUN_W-1:0] scan_ptr;
     logic [RUN_W-1:0] scan_start;
+
+    // Timing pipeline registers (RM_SCAN_RD -> RM_SCAN_CMP): the old single-cycle
+    // RM_SCAN state chained a MAX_RUNS_PER_ROW:1 array read straight into the
+    // compare/merge logic and back into scan_ptr, forming the critical self-loop
+    // at 200 MHz. Splitting the read (RM_SCAN_RD) from the compare (RM_SCAN_CMP)
+    // registers the wide mux output so no state's combinational cone contains
+    // both the array index and the comparator. Bit-exact: same prev[] entries
+    // visited in the same order, just two clock cycles per entry instead of one.
+    logic [15:0]       ps_xs_q, ps_xe_q;
+    logic [6:0]        ps_bid_q;
+    logic [RUN_W-1:0]  ps_ptr_q;
+    logic              ps_valid_q;
 
     logic [6:0]  merge_queue_a, merge_queue_b;
     logic        merge_pending;
@@ -110,14 +123,25 @@ module row_merger #(
                 else if (need_swap)
                     state_next = RM_ROW_SWAP;
                 else if (in_valid)
-                    state_next = (prev_count == '0) ? RM_ALLOC : RM_SCAN;
+                    state_next = (prev_count == '0) ? RM_ALLOC : RM_SCAN_RD;
             end
 
-            RM_SCAN: begin
-                if (scan_ptr >= prev_count)
+            // Present scan_ptr as the prev[] read address; the array read is
+            // registered into ps_*_q on the clock edge (mux -> FF only, no
+            // comparator in this cone). Always falls through to the compare state.
+            RM_SCAN_RD: begin
+                state_next = RM_SCAN_CMP;
+            end
+
+            // Operate only on the registered ps_*_q -- no array indexing here, so
+            // this cone is just comparator -> next-state / next scan_ptr.
+            RM_SCAN_CMP: begin
+                if (!ps_valid_q)
                     state_next = RM_ALLOC;
-                else if (prev_xs[scan_ptr] > cur_xe + 16'd1)
+                else if (ps_xs_q > cur_xe + 16'd1)
                     state_next = RM_ALLOC;
+                else
+                    state_next = RM_SCAN_RD;
             end
 
             RM_ALLOC: begin
@@ -187,6 +211,11 @@ module row_merger #(
             merge_queue_a <= '0;
             merge_queue_b <= '0;
             last_seen_row <= 16'hFFFF;
+            ps_xs_q       <= '0;
+            ps_xe_q       <= '0;
+            ps_bid_q      <= '0;
+            ps_ptr_q      <= '0;
+            ps_valid_q    <= 1'b0;
         end else begin
             state <= state_next;
 
@@ -215,28 +244,39 @@ module row_merger #(
                         end
                     end
 
-                    RM_SCAN: begin
-                        if (scan_ptr < prev_count &&
-                            !(prev_xs[scan_ptr] > cur_xe + 16'd1)) begin
+                    // Register the wide prev[] read; scan_ptr is the address this
+                    // cycle, ps_ptr_q/ps_valid_q remember it for RM_SCAN_CMP.
+                    RM_SCAN_RD: begin
+                        ps_xs_q    <= prev_xs[scan_ptr];
+                        ps_xe_q    <= prev_xe[scan_ptr];
+                        ps_bid_q   <= prev_bid[scan_ptr];
+                        ps_ptr_q   <= scan_ptr;
+                        ps_valid_q <= (scan_ptr < prev_count);
+                    end
+
+                    // Same semantics as the old RM_SCAN body, but reading the
+                    // registered ps_*_q instead of indexing prev_xs/prev_xe/prev_bid.
+                    RM_SCAN_CMP: begin
+                        if (ps_valid_q && !(ps_xs_q > cur_xe + 16'd1)) begin
                             // Check 8-connected overlap
-                            if (prev_xe[scan_ptr] + 16'd1 >= cur_xs &&
-                                prev_xs[scan_ptr] <= cur_xe + 16'd1) begin
+                            if (ps_xe_q + 16'd1 >= cur_xs &&
+                                ps_xs_q <= cur_xe + 16'd1) begin
                                 if (!cur_has_match) begin
-                                    cur_blob_id   <= prev_bid[scan_ptr];
+                                    cur_blob_id   <= ps_bid_q;
                                     cur_has_match <= 1'b1;
                                     cur_is_new    <= 1'b0;
-                                end else if (prev_bid[scan_ptr] != cur_blob_id) begin
+                                end else if (ps_bid_q != cur_blob_id) begin
                                     merge_queue_a <= cur_blob_id;
-                                    merge_queue_b <= prev_bid[scan_ptr];
+                                    merge_queue_b <= ps_bid_q;
                                     merge_pending <= 1'b1;
                                 end
                             end
 
-                            if (prev_xe[scan_ptr] + 16'd1 < cur_xs) begin
-                                scan_start <= scan_ptr + 1'b1;
+                            if (ps_xe_q + 16'd1 < cur_xs) begin
+                                scan_start <= ps_ptr_q + 1'b1;
                             end
 
-                            scan_ptr <= scan_ptr + 1'b1;
+                            scan_ptr <= ps_ptr_q + 1'b1;
                         end
                     end
 
