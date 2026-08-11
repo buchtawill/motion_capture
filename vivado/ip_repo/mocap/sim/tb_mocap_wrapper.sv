@@ -302,8 +302,19 @@ module tb_mocap_wrapper;
     endtask
 
     // stream_frame -- stream the currently loaded frame_mem as 4px/beat.
+    //
+    // The blob core is now a passthrough SNOOP that never backpressures the
+    // camera, so it can only capture a frame whose SOF arrives while the FC FSM
+    // is READY (FC_WAIT_SOF == 4'd4, i.e. after the per-frame histogram scrub).
+    // A real camera streams continuously, so a SOF always eventually lands in
+    // that window; since this TB issues exactly one frame per call, we first
+    // wait for the ready window, then drive SOF. (run_extractor has no SOF input
+    // and treats its first captured beat as pixel (0,0), so this alignment is
+    // what keeps the blob/histogram results correct.)
     task automatic stream_frame();
         int total_beats;
+        @(posedge clk);
+        wait (dut.fc_state == 4'd4);   // FC_WAIT_SOF
         total_beats = (cur_hres * cur_vres) / 4;
         for (int i = 0; i < total_beats; i++) begin
             stream_beat(

@@ -1224,6 +1224,17 @@ int main(int argc, char *argv[]) {
         if (mocap_fd >= 0 && (pfds[2].revents & POLLIN)) {
             mocap_pipe->drain_irq();      // consume the UIO event
             blobdet->read_all(blob_list); // published bank (held until ack)
+            // Best-effort blob path: the video passthrough is never stalled, so
+            // a busy frame can drop beats from the blob snoop FIFO. Warn once so
+            // it's visible without spamming; video is unaffected either way.
+            static bool warned_blob_fifo_ovfl = false;
+            if (!warned_blob_fifo_ovfl && mocap_pipe->blob_fifo_overflow()) {
+                warned_blob_fifo_ovfl = true;
+                std::cerr << "WARNING: STATUS.BLOB_FIFO_OVFL set -- the blob core "
+                             "fell behind on a busy frame and dropped beats; blob "
+                             "results are best-effort for such frames (video is "
+                             "unaffected).\n";
+            }
             mocap_pipe->ack();            // release buffer back to HW
             mocap_pipe->arm_irq();        // re-enable next frame-done IRQ
             box_clear(box);

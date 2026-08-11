@@ -201,6 +201,12 @@ public:
     bool overrun() const {
         return (regs_->STATUS & MOCAP_REGS__STATUS_REG__OVERRUN_bm) != 0;
     }
+    // Sticky: the blob snoop FIFO dropped a beat because the blob core could not
+    // keep up with a busy frame. The video passthrough is unaffected; only the
+    // blob result for such a frame is best-effort/incomplete. Cleared by reset().
+    bool blob_fifo_overflow() const {
+        return (regs_->STATUS & MOCAP_REGS__STATUS_REG__BLOB_FIFO_OVFL_bm) != 0;
+    }
 
     uint32_t frame_id() const { return regs_->FRAME_ID; }
     uint32_t dropped_frames() const { return regs_->DROPPED_FRAMES; }

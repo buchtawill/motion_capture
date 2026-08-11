@@ -145,6 +145,14 @@ addrmap mocap_regs {
         // Bit 6: Sticky. At least one frame was dropped because SW had not ACKed
         //        (see DROPPED_FRAMES). Cleared only by RESET.
 
+        field {} BLOB_FIFO_OVFL[1] = 0;
+        // Bit 7: Sticky. The video datapath is a pure passthrough that never
+        //        backpressures the camera; the blob engine snoops accepted beats
+        //        through its own elastic FIFO. This bit sets if that FIFO filled
+        //        and a beat was dropped, meaning the blob result for that frame
+        //        is best-effort / incomplete (video is unaffected). Cleared only
+        //        by RESET.
+
         field {} BLOB_COUNT[15:8]  = 0;
         // Bits [15:8]: Number of blobs in the published buffer.
     };

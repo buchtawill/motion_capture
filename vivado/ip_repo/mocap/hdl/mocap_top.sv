@@ -123,53 +123,108 @@ module mocap_top #(
     wire        dims_ok    = (hres != 16'h0) && (vres != 16'h0) && (hres[1:0] == 2'b00);
 
     // =========================================================================
-    // Blob-core input FIFO (packs tuser/tlast/tdata; series datapath)
+    // Datapath fork (race-free passthrough).
+    //
+    // The MIPI CSI-2 Rx is an UN-STALLABLE source: any backpressure asserted
+    // toward it accumulates in its line buffer until it overflows ("Stream Line
+    // Buffer Full!") and frames corrupt/drop. So the VIDEO path to VDMA must
+    // NEVER depend on the blob engine or on CTRL.ENABLE -- it is a pure
+    // passthrough whose ONLY backpressure source is the downstream VDMA
+    // (m_axis_tready). The blob core and the histogram snoop the *accepted*
+    // s_axis beats through their OWN elastic FIFO; if the blob core falls behind
+    // its FIFO drops beats (best-effort) and sets STATUS.BLOB_FIFO_OVFL. The
+    // blob core can never stall the video.
+    //
+    //   s_axis --accepted beat--+--> u_out_fifo ---------------> m_axis  (VIDEO,
+    //   (tready = out_fifo         |                              never stalls)
+    //    space ONLY)              +--> 2x isp_histogram          (snoop)
+    //                             |
+    //                             +--> u_in_fifo -> blob core    (best-effort)
     // =========================================================================
-    localparam int FIFO_W = AXIS_DATA_WIDTH + AXIS_TUSER_WIDTH + 1;
+    // Packed AXIS sideband payload carried through both stream_fifos. Using a
+    // packed struct instead of a hand-counted concat/slice makes the field
+    // access name-checked: the tuser/tlast off-by-one that shredded VDMA frame
+    // sync is structurally impossible here. First field = MSB, so the bit layout
+    // is {tuser, tlast, tdata} -- identical to the previous concatenation.
+    typedef struct packed {
+        logic [AXIS_TUSER_WIDTH-1:0] tuser;  // [MSB] start-of-frame
+        logic                        tlast;  //       end-of-line
+        logic [AXIS_DATA_WIDTH-1:0]  tdata;  // [LSB] 4x8b pixels
+    } axis_payload_t;
+    localparam int FIFO_W = $bits(axis_payload_t);
 
-    logic              in_fifo_s_valid, in_fifo_s_ready;
-    logic [FIFO_W-1:0] in_fifo_s_data;
-    logic              in_fifo_m_valid, in_fifo_m_ready;
-    logic [FIFO_W-1:0] in_fifo_m_data;
-    logic              in_fifo_empty;
+    // The accepted s_axis beat, packed once and fed to BOTH FIFOs (video + blob).
+    axis_payload_t s_axis_pl;
+    assign s_axis_pl = '{tuser: s_axis_tuser, tlast: s_axis_tlast, tdata: s_axis_tdata};
 
-    assign in_fifo_s_valid = s_axis_tvalid;
-    assign s_axis_tready   = in_fifo_s_ready;
-    assign in_fifo_s_data  = {s_axis_tuser, s_axis_tlast, s_axis_tdata};
+    // ---- VIDEO passthrough FIFO: s_axis -> u_out_fifo -> m_axis -------------
+    // s_axis_tready depends ONLY on this FIFO's space -- the camera is throttled
+    // by VDMA alone, never by the blob engine or ENABLE.
+    logic          out_fifo_s_ready;
+    logic          out_fifo_m_valid, out_fifo_m_ready;
+    axis_payload_t out_fifo_m_pl;
+    logic          out_fifo_empty;
 
-    stream_fifo #(.DATA_WIDTH(FIFO_W), .DEPTH(16)) u_in_fifo (
-        .clk(aclk), .rst_n(aresetn),
-        .s_valid(in_fifo_s_valid), .s_ready(in_fifo_s_ready), .s_data(in_fifo_s_data),
-        .m_valid(in_fifo_m_valid), .m_ready(in_fifo_m_ready), .m_data(in_fifo_m_data),
-        .empty(in_fifo_empty)
-    );
-
-    wire [AXIS_DATA_WIDTH-1:0]  in_pix_data  = in_fifo_m_data[AXIS_DATA_WIDTH-1:0];
-    wire                        in_pix_tlast = in_fifo_m_data[AXIS_DATA_WIDTH];
-    wire [AXIS_TUSER_WIDTH-1:0] in_pix_tuser = in_fifo_m_data[AXIS_DATA_WIDTH +: AXIS_TUSER_WIDTH];
-
-    // =========================================================================
-    // Blob-core output FIFO -> m_axis
-    // =========================================================================
-    logic              out_fifo_s_valid, out_fifo_s_ready;
-    logic [FIFO_W-1:0] out_fifo_s_data;
-    logic              out_fifo_m_valid, out_fifo_m_ready;
-    logic [FIFO_W-1:0] out_fifo_m_data;
-    logic              out_fifo_empty;
+    assign s_axis_tready = out_fifo_s_ready;
 
     stream_fifo #(.DATA_WIDTH(FIFO_W), .DEPTH(16)) u_out_fifo (
         .clk(aclk), .rst_n(aresetn),
-        .s_valid(out_fifo_s_valid), .s_ready(out_fifo_s_ready), .s_data(out_fifo_s_data),
-        .m_valid(out_fifo_m_valid), .m_ready(out_fifo_m_ready), .m_data(out_fifo_m_data),
+        .s_valid(s_axis_tvalid), .s_ready(out_fifo_s_ready),
+        .s_data (s_axis_pl),
+        .m_valid(out_fifo_m_valid), .m_ready(out_fifo_m_ready), .m_data(out_fifo_m_pl),
         .empty(out_fifo_empty)
     );
 
-    assign m_axis_tdata     = out_fifo_m_data[AXIS_DATA_WIDTH-1:0];
-    assign m_axis_tlast     = out_fifo_m_data[AXIS_DATA_WIDTH];
-    assign m_axis_tuser     = out_fifo_m_data[AXIS_DATA_WIDTH +: AXIS_TUSER_WIDTH];
+    assign m_axis_tdata     = out_fifo_m_pl.tdata;
+    assign m_axis_tlast     = out_fifo_m_pl.tlast;
+    assign m_axis_tuser     = out_fifo_m_pl.tuser;
     assign m_axis_tkeep     = {AXIS_TKEEP_WIDTH{1'b1}};
     assign m_axis_tvalid    = out_fifo_m_valid;
     assign out_fifo_m_ready = m_axis_tready;
+
+    // The accepted-beat tap: one beat is "accepted" exactly when the video path
+    // takes it. This drives BOTH the histogram snoop and the blob input FIFO.
+    wire s_axis_accept = s_axis_tvalid & s_axis_tready;
+
+    // ---- BLOB input FIFO: SOF-gated, non-blocking tap off the accepted beat --
+    // run_extractor has no SOF input: it treats its first consumed beat after
+    // `clear` as pixel (0,0) and counts hres*vres internally. So the blob core's
+    // first captured beat MUST be a frame SOF and the FIFO must be empty when a
+    // capture begins, or every subsequent pixel is misplaced. Because the video
+    // path no longer backpressures the camera, we can no longer rely on the FIFO
+    // filling/stalling to hold frame alignment; instead we explicitly gate
+    // capture to the [SOF .. frame_done] window (blob_capture_beat / capturing_q,
+    // driven from the FC FSM below) and DRAIN the FIFO outside that window so it
+    // is always empty when the next capture's SOF arrives.
+    //
+    // Within a capture the enqueue is still non-blocking: if the blob core falls
+    // behind and the FIFO fills, the beat is DROPPED (in_fifo_s_ready never feeds
+    // back to s_axis_tready) and blob_fifo_ovfl pulses. On sparse marker frames
+    // (and in sim, with the histogram's >=4-cycle inter-beat gap) the core keeps
+    // up and this never trips; it is a hard guarantee that a busy frame degrades
+    // the blob result, not the video.
+    logic          in_fifo_s_ready;
+    logic          in_fifo_m_valid, in_fifo_m_ready;
+    axis_payload_t in_fifo_m_pl;
+    logic          in_fifo_empty;
+
+    logic capturing_q;        // high across one frame's [SOF .. frame_done]
+    logic blob_capture_beat;  // an accepted beat we want the blob core to see
+                              // (driven in the FC-FSM section, below)
+
+    wire blob_fifo_ovfl = blob_capture_beat & ~in_fifo_s_ready;
+
+    stream_fifo #(.DATA_WIDTH(FIFO_W), .DEPTH(64)) u_in_fifo (
+        .clk(aclk), .rst_n(aresetn),
+        .s_valid(blob_capture_beat), .s_ready(in_fifo_s_ready),
+        .s_data (s_axis_pl),
+        .m_valid(in_fifo_m_valid), .m_ready(in_fifo_m_ready), .m_data(in_fifo_m_pl),
+        .empty(in_fifo_empty)
+    );
+
+    wire [AXIS_DATA_WIDTH-1:0]  in_pix_data  = in_fifo_m_pl.tdata;
+    wire                        in_pix_tlast = in_fifo_m_pl.tlast;
+    wire [AXIS_TUSER_WIDTH-1:0] in_pix_tuser = in_fifo_m_pl.tuser;
 
     // =========================================================================
     // Blob core: run_extractor -> row_merger -> blob_table (reused unmodified,
@@ -188,7 +243,7 @@ module mocap_top #(
         .hres      (hres),
         .vres      (vres),
         .s_data    (in_pix_data),
-        .s_valid   (in_fifo_m_valid && out_fifo_s_ready),
+        .s_valid   (in_fifo_m_valid),
         .s_ready   (re_s_ready),
         .run_xs    (re_run_xs),
         .run_xe    (re_run_xe),
@@ -199,10 +254,12 @@ module mocap_top #(
         .frame_done(re_frame_done)
     );
 
-    // Passthrough: pop input FIFO when run_extractor accepts AND output FIFO has space
-    assign in_fifo_m_ready  = re_s_ready && out_fifo_s_ready;
-    assign out_fifo_s_valid = in_fifo_m_valid && re_s_ready && out_fifo_s_ready;
-    assign out_fifo_s_data  = in_fifo_m_data;
+    // Blob core drains its OWN input FIFO at its own pace during a capture; this
+    // is fully independent of the video path -- run_extractor stalling (dropping
+    // re_s_ready while it emits a run) can never backpressure s_axis or the video
+    // FIFO, only its own snoop FIFO. OUTSIDE a capture we force-drain (discard)
+    // so the FIFO returns to empty before the next capture's SOF.
+    assign in_fifo_m_ready = capturing_q ? re_s_ready : 1'b1;
 
     logic        rm_enable, rm_clear;
     logic [15:0] rm_out_xs, rm_out_xe, rm_out_row;
@@ -393,6 +450,29 @@ module mocap_top #(
     assign bt_flatten_start = (fc_state == FC_PROCESS) && (fc_next == FC_FINALIZE);
 
     // =========================================================================
+    // Blob capture window (SOF-aligned, exactly one frame).
+    //
+    // The blob core snoops the video stream but must never stall it, so it can
+    // only ever see a subset of frames -- the ones whose SOF arrives while the
+    // FC FSM is READY (FC_WAIT_SOF). A frame whose SOF lands while the core is
+    // still processing the previous one is simply not captured (real cameras
+    // have vertical blanking >> the ~50-cycle finalize/scrub gap, so in practice
+    // every frame is caught). capturing_q spans [SOF .. frame_done]; the very
+    // first enqueued beat is that SOF, so run_extractor's pixel (0,0) is aligned.
+    // =========================================================================
+    wire blob_sof            = s_axis_accept & s_axis_tuser[0];
+    wire blob_capture_start  = (fc_state == FC_WAIT_SOF) & blob_sof;
+    assign blob_capture_beat = s_axis_accept & (capturing_q | blob_capture_start);
+
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                capturing_q <= 1'b0;
+        else if (rst_all)            capturing_q <= 1'b0;
+        else if (re_clear)           capturing_q <= 1'b0; // FC scrub between frames
+        else if (blob_capture_start) capturing_q <= 1'b1; // frame SOF, FC ready
+        else if (re_frame_done)      capturing_q <= 1'b0; // frame fully consumed
+    end
+
+    // =========================================================================
     // Histogram control: scrub pulses + hist_en, gated on the active write bank
     // =========================================================================
     wire hist_active_period = (fc_state == FC_WAIT_SOF) || (fc_state == FC_PROCESS) ||
@@ -554,7 +634,7 @@ module mocap_top #(
     // =========================================================================
     // Sticky error/overflow bits (cleared only by RTL reset or CMD.RESET)
     // =========================================================================
-    logic hist_fifo_err_sticky, blob_overflow_sticky;
+    logic hist_fifo_err_sticky, blob_overflow_sticky, blob_fifo_ovfl_sticky;
 
     always_ff @(posedge aclk or negedge aresetn) begin
         if (!aresetn)                       hist_fifo_err_sticky <= 1'b0;
@@ -566,6 +646,14 @@ module mocap_top #(
         if (!aresetn)          blob_overflow_sticky <= 1'b0;
         else if (rst_all)      blob_overflow_sticky <= 1'b0;
         else if (rm_overflow)  blob_overflow_sticky <= 1'b1;
+    end
+
+    // Blob snoop FIFO dropped a beat (blob core couldn't keep up). Best-effort:
+    // the video was unaffected, but this frame's blob result may be incomplete.
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)           blob_fifo_ovfl_sticky <= 1'b0;
+        else if (rst_all)       blob_fifo_ovfl_sticky <= 1'b0;
+        else if (blob_fifo_ovfl) blob_fifo_ovfl_sticky <= 1'b1;
     end
 
     // =========================================================================
@@ -615,6 +703,7 @@ module mocap_top #(
         hwif_in.STATUS.HIST_FIFO_ERR.next  = hist_fifo_err_sticky;
         hwif_in.STATUS.BLOB_OVERFLOW.next  = blob_overflow_sticky;
         hwif_in.STATUS.OVERRUN.next        = overrun_sticky_q;
+        hwif_in.STATUS.BLOB_FIFO_OVFL.next = blob_fifo_ovfl_sticky;
         hwif_in.STATUS.BLOB_COUNT.next     = published_blob_count_q[read_bank_q];
 
         hwif_in.FRAME_ID.FRAME_ID.next             = frame_id_q;
