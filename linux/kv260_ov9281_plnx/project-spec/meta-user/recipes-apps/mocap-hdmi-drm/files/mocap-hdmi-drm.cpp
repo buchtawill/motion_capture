@@ -1092,6 +1092,17 @@ int main(int argc, char *argv[]) {
             "VDMA. Check: (1) 'lsmod | grep uio_pdrv_genirq' is loaded; "
             "(2) the DT node compatible is \"generic-uio\" (a stale .dtbo "
             "still reading \"xlnx,mocap-wrapper-1.0\" will not bind).");
+    // Start from a known-clean HW state. A previous run may have been Ctrl-C'd
+    // mid-frame or while still holding a published buffer (sw_owns=1), leaving
+    // the FC FSM, bank ownership, sticky error bits, FRAME_ID and DROPPED_FRAMES
+    // stale across relaunches. disable() drops ENABLE so the CMD.RESET pulse
+    // lands the FSM in READY (rather than re-arming mid post-reset scrub); reset()
+    // then clears all dynamic state + counters + stickies. arm() below starts a
+    // fresh continuous capture. (HRES/VRES/THRESHOLD are re-programmed by arm(),
+    // so nothing carries over except the free-running cycle counter, by design.)
+    mocap_pipe->disable();
+    mocap_pipe->reset();
+
     // Arm for video passthrough (mandatory) at the capture resolution,
     // BEFORE streaming starts so framing is clean from the first frame.
     mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
