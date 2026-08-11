@@ -2,30 +2,36 @@
 
 `timescale 1ns / 1ps
 module stream_fifo #(
-    parameter int DATA_WIDTH = 8,
-    parameter int DEPTH      = 16  // must be a power of 2
+    // Payload type carried through the FIFO. Defaults to a plain DATA_WIDTH-bit
+    // vector so existing width-based instantiations (isp_histogram, blob core)
+    // work unchanged. Pass a packed struct (e.g. an AXIS {tuser,tlast,tdata}
+    // payload) via .T(...) to buffer the WHOLE beat type-safely -- the sideband
+    // signals are stored and replayed verbatim, never re-sliced or regenerated.
+    parameter int  DATA_WIDTH = 8,
+    parameter type T          = logic [DATA_WIDTH-1:0],
+    parameter int  DEPTH      = 16  // must be a power of 2
 ) (
-    input  logic                  clk,
-    input  logic                  rst_n,
+    input  logic clk,
+    input  logic rst_n,
 
     // Slave (input) port
-    input  logic                  s_valid,
-    output logic                  s_ready,
-    input  logic [DATA_WIDTH-1:0] s_data,
+    input  logic s_valid,
+    output logic s_ready,
+    input  T     s_data,
 
     // Master (output) port
-    output logic                  m_valid,
-    input  logic                  m_ready,
-    output logic [DATA_WIDTH-1:0] m_data,
+    output logic m_valid,
+    input  logic m_ready,
+    output T     m_data,
 
     output logic empty
 );
 
     localparam int PTR_WIDTH = $clog2(DEPTH);
 
-    logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
-    logic [PTR_WIDTH-1:0]  wr_ptr, rd_ptr;
-    logic [PTR_WIDTH:0]    count;  // one extra bit to distinguish full from empty
+    T                     mem [0:DEPTH-1];
+    logic [PTR_WIDTH-1:0] wr_ptr, rd_ptr;
+    logic [PTR_WIDTH:0]   count;  // one extra bit to distinguish full from empty
 
     wire push = s_valid && s_ready;
     wire pop  = m_valid && m_ready;

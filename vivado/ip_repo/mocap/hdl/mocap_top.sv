@@ -151,7 +151,6 @@ module mocap_top #(
         logic                        tlast;  //       end-of-line
         logic [AXIS_DATA_WIDTH-1:0]  tdata;  // [LSB] 4x8b pixels
     } axis_payload_t;
-    localparam int FIFO_W = $bits(axis_payload_t);
 
     // The accepted s_axis beat, packed once and fed to BOTH FIFOs (video + blob).
     axis_payload_t s_axis_pl;
@@ -167,7 +166,9 @@ module mocap_top #(
 
     assign s_axis_tready = out_fifo_s_ready;
 
-    stream_fifo #(.DATA_WIDTH(FIFO_W), .DEPTH(16)) u_out_fifo (
+    // Pure passthrough buffer: 8-deep, carries the whole AXIS beat as a typed
+    // payload so tuser/tlast are stored and replayed verbatim (never re-sliced).
+    stream_fifo #(.T(axis_payload_t), .DEPTH(8)) u_out_fifo (
         .clk(aclk), .rst_n(aresetn),
         .s_valid(s_axis_tvalid), .s_ready(out_fifo_s_ready),
         .s_data (s_axis_pl),
@@ -214,7 +215,7 @@ module mocap_top #(
 
     wire blob_fifo_ovfl = blob_capture_beat & ~in_fifo_s_ready;
 
-    stream_fifo #(.DATA_WIDTH(FIFO_W), .DEPTH(64)) u_in_fifo (
+    stream_fifo #(.T(axis_payload_t), .DEPTH(64)) u_in_fifo (
         .clk(aclk), .rst_n(aresetn),
         .s_valid(blob_capture_beat), .s_ready(in_fifo_s_ready),
         .s_data (s_axis_pl),

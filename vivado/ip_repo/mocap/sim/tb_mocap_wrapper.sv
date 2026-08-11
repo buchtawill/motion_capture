@@ -328,7 +328,9 @@ module tb_mocap_wrapper;
     // =========================================================================
     // Passthrough capture + LFSR backpressure (ported from tb_blob_detect_rle)
     // =========================================================================
-    logic [31:0] pt_mem [0:MAX_FRAME_WORDS-1];
+    logic [31:0] pt_mem       [0:MAX_FRAME_WORDS-1];
+    logic        pt_tuser_mem [0:MAX_FRAME_WORDS-1]; // SOF sideband, per output beat
+    logic        pt_tlast_mem [0:MAX_FRAME_WORDS-1]; // EOL sideband, per output beat
     int          pt_wr     = 0;
     logic        pt_active = 1'b0;
 
@@ -337,9 +339,14 @@ module tb_mocap_wrapper;
         if (s_axis_tvalid && s_axis_tready) s_axis_accept_cnt <= s_axis_accept_cnt + 1;
     end
 
+    // Snoop the m_axis output beats: capture tdata AND the tuser/tlast sideband so
+    // verify_passthrough can prove the framing is buffered verbatim (not just the
+    // pixel payload). A mis-sliced/mis-typed sideband would show up here.
     always @(posedge clk) begin
         if (pt_active && m_axis_tvalid && m_axis_tready) begin
-            pt_mem[pt_wr] <= m_axis_tdata;
+            pt_mem[pt_wr]       <= m_axis_tdata;
+            pt_tuser_mem[pt_wr] <= m_axis_tuser;
+            pt_tlast_mem[pt_wr] <= m_axis_tlast;
             pt_wr <= pt_wr + 1;
         end
     end
@@ -357,8 +364,11 @@ module tb_mocap_wrapper;
 
     task automatic verify_passthrough(input int total_beats);
         int mismatches;
+        int side_mismatches;      // tuser/tlast (framing) mismatches
+        logic exp_sof, exp_eol;
         repeat (32) @(posedge clk);
         mismatches = 0;
+        side_mismatches = 0;
         for (int i = 0; i < total_beats; i++) begin
             if (pt_mem[i] !== frame_mem[i]) begin
                 if (mismatches < 5)
@@ -366,11 +376,29 @@ module tb_mocap_wrapper;
                              $time, i, pt_mem[i], frame_mem[i]);
                 mismatches++;
             end
+            // Framing sideband must be buffered verbatim: SOF (tuser) only on the
+            // first beat of the frame; EOL (tlast) on every beat that ends a line
+            // -- exactly what stream_frame() drove into s_axis.
+            exp_sof = (i == 0);
+            exp_eol = ((((i + 1) * 4) % cur_hres) == 0);
+            if (pt_tuser_mem[i] !== exp_sof || pt_tlast_mem[i] !== exp_eol) begin
+                if (side_mismatches < 5)
+                    $display("[%0t ns] [FAIL]   passthrough SIDEBAND beat %0d: tuser %b (exp %b), tlast %b (exp %b)",
+                             $time, i, pt_tuser_mem[i], exp_sof, pt_tlast_mem[i], exp_eol);
+                side_mismatches++;
+            end
         end
         if (mismatches == 0)
             pass_count++;
         else begin
             $display("[%0t ns] [FAIL]   passthrough: %0d mismatches", $time, mismatches);
+            fail_count++;
+        end
+        if (side_mismatches == 0)
+            pass_msg("  passthrough tuser/tlast sideband buffered verbatim");
+        else begin
+            $display("[%0t ns] [FAIL]   passthrough tuser/tlast: %0d sideband mismatches",
+                     $time, side_mismatches);
             fail_count++;
         end
         check32("  passthrough word count", 32'(pt_wr), 32'(total_beats));
