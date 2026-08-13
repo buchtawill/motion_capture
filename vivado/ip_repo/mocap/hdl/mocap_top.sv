@@ -7,11 +7,15 @@
 // See motion_capture/agents/PLAN_new_hw_pipeline.md (architecture) and the
 // implementation plan for the ownership protocol.
 //
-// Datapath:
-//   s_axis --+--> (snoop) 2x isp_histogram (ping-pong, one hist_en at a time)
-//            |
-//            +--> FIFO -> blob core (run_extractor/row_merger/blob_table,
-//                 reused unmodified from blob_detect_rle) -> FIFO -> m_axis
+// Datapath (race-free passthrough; see the fuller comment near u_out_fifo below):
+//   s_axis --accepted beat--+--> u_out_fifo ---------------> m_axis  (VIDEO,
+//   (tready = out_fifo         |                              never stalls)
+//    space ONLY)              +--> 2x isp_histogram          (snoop)
+//                             |
+//                             +--> u_in_fifo -> blob core    (best-effort; blob
+//                                  (run_extractor/row_merger/blob_table,
+//                                   reused unmodified from blob_detect_rle)
+//                                  drops beats on overflow -- never backpressures)
 //
 //   Result store (all banking owned HERE; engines are reused unmodified):
 //     - histogram: the two isp_histogram instances ARE the two banks
@@ -415,6 +419,24 @@ module mocap_top #(
 
     wire copy_done = (fc_state == FC_COPY) && (copy_idx_q >= copy_count_q) && !copy_prev_valid_q;
 
+    // blob_sof: the raw, pre-FIFO input SOF (accepted s_axis beat with tuser
+    // asserted). Declared here (ahead of its use below in blob_capture_start)
+    // because it is also needed by fc_force_resync's force-resync check --
+    // unlike anything derived from u_in_fifo's output, this signal is NEVER
+    // dropped, even when u_in_fifo itself is overflowing and dropping beats.
+    wire blob_sof = s_axis_accept & s_axis_tuser[0];
+
+    // Force-resync: u_in_fifo is best-effort and drops beats under overflow, so
+    // run_extractor's internal beat count can come up short and re_frame_done
+    // may never fire, wedging FC_PROCESS forever. blob_sof (below) is derived
+    // pre-FIFO from s_axis directly, so it is NEVER dropped. If a NEW frame's
+    // SOF is accepted while we are still stuck in FC_PROCESS, the current
+    // frame is unrecoverable (a beat was already lost) -- force the FC FSM out
+    // to FC_FINALIZE so the pipeline re-locks on the frame after this one.
+    // (The current frame's own SOF was already consumed back in FC_WAIT_SOF,
+    // so any blob_sof seen while still in FC_PROCESS is genuinely the next frame.)
+    wire fc_force_resync = (fc_state == FC_PROCESS) & blob_sof & s_axis_accept;
+
     always_comb begin
         fc_next = fc_state;
         case (fc_state)
@@ -423,7 +445,7 @@ module mocap_top #(
             FC_IDLE:                  if (ctrl_enable && dims_ok) fc_next = FC_SCRUB;
             FC_SCRUB:                 if (hist_scrub_done_wb && !bt_clearing) fc_next = FC_WAIT_SOF;
             FC_WAIT_SOF:              if (in_fifo_m_valid && in_pix_tuser[0]) fc_next = FC_PROCESS;
-            FC_PROCESS:               if (re_frame_done) fc_next = FC_FINALIZE;
+            FC_PROCESS:               if (re_frame_done || fc_force_resync) fc_next = FC_FINALIZE;
             FC_FINALIZE:              if (bt_flatten_done && hist_flush_done) fc_next = FC_LATCH;
             FC_LATCH:                 fc_next = FC_COPY;
             FC_COPY:                  if (copy_done) fc_next = FC_PUBLISH;
@@ -448,7 +470,20 @@ module mocap_top #(
     assign rm_clear  = re_clear;
 
     assign bt_clear         = re_clear;
-    assign bt_flatten_start = (fc_state == FC_PROCESS) && (fc_next == FC_FINALIZE);
+    // LEVEL (held throughout FC_FINALIZE), not an edge pulse. blob_table only
+    // samples flatten_start in BT_READY and with priority in_valid > merge_valid
+    // > flatten_start; a single-cycle pulse is LOST if the table happens to be
+    // mid-run/merge that cycle. On the normal (re_frame_done) path the blob
+    // pipeline is already quiesced at FINALIZE entry so a pulse sufficed, but on
+    // the fc_force_resync path FC_PROCESS is force-terminated mid-frame with
+    // runs still in flight -- the pulse would be dropped and blob_table would
+    // sit in BT_READY forever (flatten_done never asserts -> FC wedged in
+    // FINALIZE). Holding it level lets blob_table first drain all pending
+    // runs/merges (its own priority) and then take flatten the moment it
+    // quiesces to BT_READY. Safe against re-flatten: BT_DONE -> BT_IDLE, and
+    // BT_IDLE ignores flatten_start (only `clear` leaves it), by which point FC
+    // has left FINALIZE and dropped the level anyway.
+    assign bt_flatten_start = (fc_state == FC_FINALIZE);
 
     // =========================================================================
     // Blob capture window (SOF-aligned, exactly one frame).
@@ -461,9 +496,13 @@ module mocap_top #(
     // every frame is caught). capturing_q spans [SOF .. frame_done]; the very
     // first enqueued beat is that SOF, so run_extractor's pixel (0,0) is aligned.
     // =========================================================================
-    wire blob_sof            = s_axis_accept & s_axis_tuser[0];
     wire blob_capture_start  = (fc_state == FC_WAIT_SOF) & blob_sof;
-    assign blob_capture_beat = s_axis_accept & (capturing_q | blob_capture_start);
+    // Gate off fc_force_resync's own triggering beat: capturing_q is still its
+    // OLD (pre-clear) value on this same cycle (it only clears on the next
+    // edge below), so without this exclusion the next frame's SOF beat would
+    // sneak into u_in_fifo as a stray leftover that misaligns the following
+    // real capture.
+    assign blob_capture_beat = s_axis_accept & (capturing_q | blob_capture_start) & !fc_force_resync;
 
     always_ff @(posedge aclk or negedge aresetn) begin
         if (!aresetn)                capturing_q <= 1'b0;
@@ -471,6 +510,11 @@ module mocap_top #(
         else if (re_clear)           capturing_q <= 1'b0; // FC scrub between frames
         else if (blob_capture_start) capturing_q <= 1'b1; // frame SOF, FC ready
         else if (re_frame_done)      capturing_q <= 1'b0; // frame fully consumed
+        else if (fc_force_resync)    capturing_q <= 1'b0; // force-resync: stop
+                                                            // enqueuing the NEW
+                                                            // frame's beats into
+                                                            // u_in_fifo while we
+                                                            // finalize the old one
     end
 
     // =========================================================================

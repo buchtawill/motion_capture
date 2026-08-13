@@ -325,6 +325,28 @@ module tb_mocap_wrapper;
         end
     endtask
 
+    // stream_frame_no_wait -- identical to stream_frame(), but does NOT wait
+    // for FC_WAIT_SOF first. Used by Group G to model true continuous video:
+    // after an overload frame, a real camera keeps streaming regardless of
+    // where the FC FSM happens to be. run_extractor's SOF-resync (this fix)
+    // relies on exactly this -- the SOF that force-completes an overflowed
+    // frame is consumed by run_extractor while FC is still in FC_PROCESS,
+    // not FC_WAIT_SOF, so a caller that blocked on FC_WAIT_SOF first would
+    // deadlock (FC never reaches WAIT_SOF until run_extractor's resync
+    // fires, which never happens because nothing is being streamed to
+    // trigger it).
+    task automatic stream_frame_no_wait();
+        int total_beats;
+        total_beats = (cur_hres * cur_vres) / 4;
+        for (int i = 0; i < total_beats; i++) begin
+            stream_beat(
+                frame_mem[i],
+                (i == 0) ? 1'b1 : 1'b0,
+                (((i + 1) * 4) % cur_hres == 0) ? 1'b1 : 1'b0
+            );
+        end
+    endtask
+
     // =========================================================================
     // Passthrough capture + LFSR backpressure (ported from tb_blob_detect_rle)
     // =========================================================================
@@ -430,6 +452,26 @@ module tb_mocap_wrapper;
             t++;
             if (t > timeout_cycles) begin
                 fail_msg("Timeout waiting for frame_done_irq_o");
+                ok = 1'b0;
+                return;
+            end
+        end
+    endtask
+
+    // try_wait_irq -- identical to wait_irq() but a timeout is NOT a suite
+    // failure (no fail_msg/fail_count bump): used where an individual miss
+    // is an expected, tolerated outcome rather than a bug (e.g. Group G's
+    // recovery loop, where 1-2 post-overflow frames are architecturally
+    // expected to be skipped/garbled while the SOF-resync catches up -- only
+    // the aggregate "did it ever recover" check should be a hard failure).
+    task automatic try_wait_irq(input int timeout_cycles, output bit ok);
+        int t;
+        ok = 1'b1;
+        t = 0;
+        while (!frame_done_irq_o) begin
+            @(posedge clk);
+            t++;
+            if (t > timeout_cycles) begin
                 ok = 1'b0;
                 return;
             end
@@ -1111,6 +1153,161 @@ module tb_mocap_wrapper;
         end
 
         // =====================================================================
+        // Group G -- SUSTAINED blob snoop-FIFO overflow / SOF resync
+        //
+        // Reported failure: the pipeline freezes after a random number of
+        // frames under a bright/saturated scene. Hypothesised RTL mechanism:
+        // run_extractor derives the frame boundary PURELY from a beat count.
+        // u_in_fifo (the blob core's best-effort snoop FIFO, mocap_top.sv)
+        // DROPS beats under saturation (it must never backpressure video), so
+        // run_extractor's per-frame beat count comes up short and its
+        // count-based re_frame_done fires late/misaligned -- and, the theory
+        // goes, can wedge FC_PROCESS permanently.
+        //
+        // This test is a genuine DIFFERENTIAL / liveness probe, unlike the
+        // earlier single-overflow+sparse version (which passed on BOTH the
+        // baseline and the fix and therefore proved nothing). It applies
+        // SUSTAINED overload -- N_OVERFLOW saturated 640x400 checkerboard
+        // frames streamed back-to-back with ZERO inter-beat gap, each with
+        // its own SOF -- and measures two things the fix must change:
+        //
+        //   (a) LIVENESS across the burst: sample FRAME_ID before and after
+        //       the whole burst. If the pipeline ever wedges permanently
+        //       (the reported freeze), FRAME_ID never advances -> delta==0
+        //       and this FAILS. A live pipeline publishes >=1 frame across
+        //       N_OVERFLOW input frames, so delta>0.  <-- the wedge detector
+        //
+        //   (b) RESYNC LATENCY after the burst: switch to a sparse single-
+        //       pixel scene and count how many frames until a CORRECT
+        //       single-blob result is published (frames_to_resync). The fix
+        //       should bound this tightly; a large or never value means the
+        //       misalignment persists.
+        //
+        // STATUS.BLOB_FIFO_OVFL (bit 7; not yet in mocap_regs_defines.svh, so
+        // read directly) is also checked so the test fails loudly if the
+        // stimulus stopped actually overflowing the FIFO.
+        //
+        // The DEBUG lines print frame_id_start/end, delta, ovfl, and
+        // frames_to_resync so the baseline-vs-fix numbers can be compared
+        // directly from the log even when both nominally "pass".
+        // =====================================================================
+        $display("\n===== Group G: SUSTAINED blob FIFO overflow / SOF resync =====");
+        begin : group_g
+            logic [31:0] status_val;
+            logic [31:0] fid_start, fid_end;
+            int          fid_delta;
+            int          blob_count;
+            blob_desc_t  blobs [0:MAX_BLOBS-1];
+            int          gw, gh, total_beats;
+            int          frames_to_resync;
+            bit          resynced;
+            localparam int N_OVERFLOW = 8;   // saturated frames in the burst
+            localparam int N_RECOVERY = 8;   // sparse frames allowed to resync
+
+            hw_reset();
+
+            // Saturated checkerboard: every pixel alternates above/below
+            // threshold, maximizing runs/beat -> heavy row_merger/blob_table
+            // backpressure -> run_extractor stalls -> the 64-deep snoop FIFO
+            // fills and drops beats. This is the "bright scene" overload.
+            gw = 640; gh = 400;
+            total_beats = (gw * gh) / 4;
+            for (int i = 0; i < total_beats; i++)
+                frame_mem[i] = (i % 2 == 0) ? 32'hFF00FF00 : 32'h00FF00FF;
+            cur_hres = gw; cur_vres = gh;
+
+            arm_continuous(gw, gh, 128);
+            @(posedge clk);
+            wait (dut.fc_state == 4'd4); // FC_WAIT_SOF
+
+            axi_read(`MOCAP_REG_FRAME_ID, fid_start);
+
+            // ---- SUSTAINED overload: N_OVERFLOW saturated frames streamed
+            // continuously, ZERO inter-beat gap, SOF at each frame boundary.
+            // No AXI reads mid-burst (keeps s_axis truly back-to-back). If the
+            // pipeline wedges on any frame, this loop still drains all input
+            // (the video path never backpressures) and FRAME_ID simply stops
+            // advancing -- detected by the delta check after the loop.
+            for (int f = 0; f < N_OVERFLOW; f++) begin
+                for (int i = 0; i < total_beats; i++) begin
+                    s_axis_tdata  <= frame_mem[i];
+                    s_axis_tuser  <= (i == 0) ? 1'b1 : 1'b0;
+                    s_axis_tlast  <= (((i + 1) * 4) % gw == 0) ? 1'b1 : 1'b0;
+                    s_axis_tvalid <= 1'b1;
+                    @(posedge clk);
+                    while (!s_axis_tready) @(posedge clk);
+                end
+            end
+            s_axis_tvalid <= 1'b0;
+            @(posedge clk);
+
+            axi_read(`MOCAP_REG_FRAME_ID, fid_end);
+            fid_delta = int'(fid_end) - int'(fid_start);
+            axi_read(`MOCAP_REG_STATUS, status_val);
+            $display("[%0t ns] G: [DEBUG] burst: FRAME_ID %0d -> %0d (delta=%0d over %0d input frames), BLOB_FIFO_OVFL=%0b status=0x%08x",
+                     $time, fid_start, fid_end, fid_delta, N_OVERFLOW, status_val[7], status_val);
+
+            // Stimulus sanity: the FIFO must actually have overflowed.
+            check("G: STATUS.BLOB_FIFO_OVFL sticky set during sustained overload",
+                  status_val[7], 1'b1);
+
+            // (a) LIVENESS / wedge detector: across N_OVERFLOW input frames a
+            // live pipeline must publish at least one frame. delta==0 is the
+            // reported permanent freeze.
+            check("G: pipeline stays live under sustained overload (FRAME_ID advances, no wedge)",
+                  (fid_delta > 0), 1'b1);
+
+            // Drain any pending IRQ so the resync phase starts clean.
+            begin
+                bit drain_ok;
+                try_wait_irq(2000, drain_ok);
+                if (drain_ok) results_ack();
+            end
+
+            // ---- (b) RESYNC LATENCY: switch to the sparse single-pixel
+            // fixture (blob at xmin==100) and count frames until a CORRECT
+            // result publishes. HRES/VRES stay at 640x400 (fixture's own
+            // resolution) so run_extractor cannot "accidentally" realign via
+            // a small-modulus count wrap -- realignment must come from the
+            // SOF-gated capture-start / SOF-resync path.
+            load_frame_hex(frame_files[5], frame_w[5], frame_h[5]);
+
+            resynced         = 1'b0;
+            frames_to_resync = -1;
+            for (int k = 0; k < N_RECOVERY; k++) begin
+                bit irq_ok_k;
+                stream_frame_no_wait();
+                try_wait_irq(500_000, irq_ok_k);
+                if (irq_ok_k) begin
+                    axi_read(`MOCAP_REG_STATUS, status_val);
+                    blob_count = int'(`MOCAP_STATUS_GET_BLOB_COUNT(status_val));
+                    if (blob_count == 1) begin
+                        read_blobs(1, blobs);
+                        $display("[%0t ns] G: [DEBUG] resync frame %0d: blob_count=%0d xmin=%0d",
+                                 $time, k, blob_count, blobs[0].xmin);
+                        if (!resynced && blobs[0].count == 32'd1 && blobs[0].xmin == 32'd100) begin
+                            resynced         = 1'b1;
+                            frames_to_resync = k;
+                        end
+                    end else begin
+                        $display("[%0t ns] G: [DEBUG] resync frame %0d: blob_count=%0d (garbled)",
+                                 $time, k, blob_count);
+                    end
+                    results_ack();
+                end else begin
+                    $display("[%0t ns] G: [DEBUG] resync frame %0d: no IRQ (timeout)", $time, k);
+                end
+            end
+            $display("[%0t ns] G: [DEBUG] frames_to_resync=%0d (within %0d allowed)",
+                     $time, frames_to_resync, N_RECOVERY);
+
+            // (b) The pipeline eventually re-locks to the true frame boundary
+            // and publishes the correct single blob.
+            check("G: pipeline resyncs to correct single-blob result after sustained overload",
+                  resynced, 1'b1);
+        end
+
+        // =====================================================================
         // Summary
         // =====================================================================
         if (idle_sideband_err != 0) begin
@@ -1130,8 +1327,13 @@ module tb_mocap_wrapper;
     end
 
     initial begin : timeout_watchdog
-        #50ms;
-        $display("[TIMEOUT] Simulation exceeded 50 ms");
+        // Bumped from 50ms to 100ms to give Group G (which streams several
+        // extra native-resolution 640x400 recovery frames, plus per-attempt
+        // try_wait_irq() watchdogs that legitimately burn their full budget
+        // on skipped/garbled recovery attempts) comfortable margin without
+        // making an otherwise-passing run flaky.
+        #100ms;
+        $display("[TIMEOUT] Simulation exceeded 100 ms");
         $fatal;
     end
 
