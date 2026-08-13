@@ -38,7 +38,13 @@ module stream_fifo #(
 
     assign s_ready = (count < DEPTH);
     assign m_valid = (count > 0);
-    assign m_data  = mem[rd_ptr];
+    // Gate the payload with validity. mem[rd_ptr] retains the last beat written
+    // to that slot, so when the FIFO is empty the combinational read would still
+    // expose a stale beat -- and after DEPTH pops rd_ptr wraps back onto a slot
+    // whose retained beat had tuser(SOF)/tlast(EOL) set, making those sideband
+    // bits glitch on the bus while tvalid is low. Legal per AXIS (payload is
+    // don't-care when !tvalid) but it pollutes the bus/ILA; drive zero when idle.
+    assign m_data  = m_valid ? mem[rd_ptr] : '0;
     assign empty   = (count == '0);
 
     always_ff @(posedge clk or negedge rst_n) begin

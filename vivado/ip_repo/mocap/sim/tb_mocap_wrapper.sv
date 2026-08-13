@@ -351,6 +351,20 @@ module tb_mocap_wrapper;
         end
     end
 
+    // Idle-bus sideband check: with the payload gated by validity in stream_fifo,
+    // the output must never expose a stale SOF/EOL bit while tvalid is low. This
+    // is the direct regression guard for the ILA glitches at 2074 (tuser) and
+    // 3492 (tlast) -- both were mem[rd_ptr] retaining an old framing beat that
+    // rd_ptr wrapped back onto after DEPTH pops.
+    int idle_sideband_err = 0;
+    always @(posedge clk) begin
+        if (aresetn && !m_axis_tvalid && (m_axis_tuser !== 1'b0 || m_axis_tlast !== 1'b0)) begin
+            idle_sideband_err++;
+            $error("[%0t] m_axis sideband set while tvalid=0 (tuser=%b tlast=%b) -- stale FIFO payload",
+                   $time, m_axis_tuser, m_axis_tlast);
+        end
+    end
+
     logic bp_enable = 1'b0;
     logic [7:0] bp_lfsr = 8'hA5;
     always @(posedge clk) begin
@@ -1099,6 +1113,11 @@ module tb_mocap_wrapper;
         // =====================================================================
         // Summary
         // =====================================================================
+        if (idle_sideband_err != 0) begin
+            fail_count += idle_sideband_err;
+            $display("[%0t ns] [FAIL] %0d idle-bus sideband glitches (tuser/tlast set while tvalid=0)",
+                     $time, idle_sideband_err);
+        end
         $display("\n==============================================");
         $display("  Results: %0d passed, %0d failed", pass_count, fail_count);
         $display("==============================================");
