@@ -113,6 +113,28 @@ if [ ! -d "$SYSROOT/usr/include" ]; then
     done
 fi
 
+# --- 2b. ALWAYS refresh the local mocap-common headers from source ------------
+# mocap-common is header-only; the merged sysroot above hardlinks its headers
+# from the bitbake-STAGED component copy, which is only refreshed by a full
+# petalinux build. So an edit to a driver header (e.g. mocap_pipeline.hpp) would
+# be invisible to a plain re-run of this script -- the app rebuilds cleanly but
+# against a stale header. Overlay the live sources every run so every app truly
+# recompiles against current headers with no petalinux re-stage needed.
+#   -L                 : dereference the isp_regs.h / mocap_regs.h symlinks
+#                        (they point at the RDL-generated headers under vivado/).
+#   --remove-destination: the sysroot entries are HARDLINKS into the component
+#                        sysroot (cp -al); a plain copy would write THROUGH the
+#                        link and corrupt the staged component. Unlink first.
+MOCAP_COMMON_SRC="$PROJ/project-spec/meta-user/recipes-libs/mocap-common/files"
+if [ -d "$MOCAP_COMMON_SRC" ]; then
+    log "refreshing live mocap-common headers into merged sysroot"
+    mkdir -p "$SYSROOT/usr/include/mocap"
+    for h in "$MOCAP_COMMON_SRC"/*.h "$MOCAP_COMMON_SRC"/*.hpp; do
+        [ -e "$h" ] || continue
+        cp -L --remove-destination "$h" "$SYSROOT/usr/include/mocap/"
+    done
+fi
+
 # --- 3. build environment (mirrors the recipe's do_compile) -------------------
 export PATH="$GCC_BIN:$BU_BIN:$PATH"
 export CXX="aarch64-xilinx-linux-g++ $TUNE -B$TOOLBIN --sysroot=$SYSROOT"

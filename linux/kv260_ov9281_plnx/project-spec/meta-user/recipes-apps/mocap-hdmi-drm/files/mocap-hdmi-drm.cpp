@@ -37,8 +37,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <mutex>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -69,6 +73,209 @@ using namespace mocap;
 static std::atomic<bool> g_quit{false};
 
 static void on_signal(int) { g_quit = true; }
+
+// Set by the watchdog when it detects a recoverable MOCAP PIPELINE HANG; the
+// main thread consumes it and performs the soft reset, so every mocap register
+// write (disable/reset/arm/arm_irq) stays on one thread (no cross-thread CMD
+// race). This is a symptom-level mitigation to keep the field system alive --
+// the real fix is in the RTL frame-sync (run_extractor frames by beat count, so
+// a dropped snoop-FIFO beat under overload desyncs it forever).
+static std::atomic<bool> g_recover_req{false};
+
+// Latest V4L2 capture progress, published by the render thread and read by the
+// watchdog thread. Guarded by g_cap_mtx (the "semaphore" around buf access): the
+// render thread writes it right after each VIDIOC_DQBUF; the watchdog snapshots
+// it under the same lock. dq_count is a monotonic DQBUF tally that works even if
+// a driver leaves buf.sequence at 0.
+struct CaptureBeat {
+    uint32_t sequence = 0;   // last v4l2_buffer.sequence
+    uint64_t dq_count = 0;   // number of frames dequeued since STREAMON
+};
+static std::mutex g_cap_mtx;
+static CaptureBeat g_cap;
+
+static void publish_capture_beat(uint32_t sequence) {
+    std::lock_guard<std::mutex> lk(g_cap_mtx);
+    g_cap.sequence = sequence;
+    g_cap.dq_count++;
+}
+static CaptureBeat read_capture_beat() {
+    std::lock_guard<std::mutex> lk(g_cap_mtx);
+    return g_cap;
+}
+
+// --- hardware-hang watchdog -------------------------------------------------
+//
+// A hang is not one failure but several, and each shows a different signature
+// across four independent progress signals:
+//   * the free-running cycle counter (raw PL clock / AXI-Lite liveness),
+//   * FRAME_ID           (mocap blob+ownership pipeline published a frame),
+//   * the UIO interrupt count in /proc/interrupts (the IRQ actually reached SW),
+//   * the V4L2 capture sequence (frames are still arriving from the sensor).
+// The watchdog samples all four on its own thread and classifies a stall so the
+// log says *which* stage died instead of just "it froze".
+
+// Resolve the /proc/interrupts label for a /dev/uioN device. uio_pdrv_genirq
+// requests its IRQ under the platform device name (e.g. "a0010000.mocap"), which
+// is the basename of /sys/class/uio/uioN/device. Falls back to the UIO "name".
+static std::string resolve_irq_label(const std::string &uio_dev) {
+    auto slash = uio_dev.rfind('/');
+    std::string base = (slash == std::string::npos) ? uio_dev
+                                                    : uio_dev.substr(slash + 1);
+    if (base.empty())
+        return {};
+    char buf[512] = {};
+    std::string link = "/sys/class/uio/" + base + "/device";
+    ssize_t n = readlink(link.c_str(), buf, sizeof(buf) - 1);
+    if (n > 0) {
+        std::string t(buf, n);
+        auto s = t.rfind('/');
+        return (s == std::string::npos) ? t : t.substr(s + 1);
+    }
+    std::ifstream nf("/sys/class/uio/" + base + "/name");
+    std::string name;
+    if (nf && std::getline(nf, name) && !name.empty())
+        return name;
+    return {};
+}
+
+// Sum the per-CPU interrupt counts on the first /proc/interrupts line whose text
+// contains `label`. Returns -1 if the label is empty or no line matches.
+static long read_irq_count(const std::string &label) {
+    if (label.empty())
+        return -1;
+    std::ifstream f("/proc/interrupts");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.find(label) == std::string::npos)
+            continue;
+        // After the leading "NN:" come the per-CPU counts (integers); the first
+        // non-integer token is the controller name, at which point `is >> v`
+        // fails and stops the sum. That yields the total interrupt count.
+        std::istringstream is(line);
+        std::string irq_tok;
+        if (!(is >> irq_tok)) // "NN:"
+            continue;
+        long total = 0, v;
+        while (is >> v)
+            total += v;
+        return total;
+    }
+    return -1;
+}
+
+// Watchdog cadence and how long a signal may be frozen before we call it stalled.
+static constexpr int kWdPollMs = 150;
+static constexpr int kWdStallMs = 750;
+
+static void watchdog_thread(MocapPipeline *mp, std::string irq_label) {
+    using clock = std::chrono::steady_clock;
+    auto ms_since = [](clock::time_point t) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   clock::now() - t)
+            .count();
+    };
+
+    const auto t0 = clock::now();
+    // Last-changed timestamps per signal; seed to now so we don't false-trip in
+    // the first window before any frames have flowed.
+    clock::time_point last_frame_chg = t0, last_irq_chg = t0, last_cap_chg = t0;
+    uint32_t prev_frame = mp->frame_id();
+    long prev_irq = read_irq_count(irq_label);
+    CaptureBeat prev_cap = read_capture_beat();
+    uint64_t prev_cycles = mp->snapshot_cycles().cycles;
+
+    enum State { HEALTHY, CLOCK_DEAD, PIPELINE_HANG, IRQ_LOST, CAPTURE_STALL };
+    State state = HEALTHY;
+    auto name = [](State s) {
+        switch (s) {
+        case CLOCK_DEAD:    return "PL CLOCK/RESET STUCK";
+        case PIPELINE_HANG: return "MOCAP PIPELINE HANG";
+        case IRQ_LOST:      return "IRQ DELIVERY LOST";
+        case CAPTURE_STALL: return "CAPTURE/VDMA STALL";
+        default:            return "healthy";
+        }
+    };
+
+    while (!g_quit) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kWdPollMs));
+        if (g_quit)
+            break;
+
+        const uint32_t frame = mp->frame_id();
+        const uint32_t status = mp->status();
+        const uint32_t dropped = mp->dropped_frames();
+        const uint64_t cycles = mp->snapshot_cycles().cycles;
+        const long irq = read_irq_count(irq_label);
+        const CaptureBeat cap = read_capture_beat();
+
+        if (frame != prev_frame) { prev_frame = frame; last_frame_chg = clock::now(); }
+        if (irq != prev_irq)     { prev_irq = irq;     last_irq_chg = clock::now(); }
+        if (cap.dq_count != prev_cap.dq_count) { prev_cap = cap; last_cap_chg = clock::now(); }
+
+        const bool clock_dead = (cycles == prev_cycles); // 64-bit free-runner:
+                                                         // any live clock moves it
+        prev_cycles = cycles;
+
+        const bool cam_alive     = ms_since(last_cap_chg)   < kWdStallMs;
+        const bool frame_stalled = ms_since(last_frame_chg) > kWdStallMs;
+        const bool irq_stalled   = ms_since(last_irq_chg)   > kWdStallMs;
+
+        // Grace period: don't classify until the pipeline has had time to spin up
+        // after STREAMON (first-frame latency must not read as a stall).
+        if (ms_since(t0) < 2000)
+            continue;
+
+        State next = HEALTHY;
+        if (clock_dead)
+            next = CLOCK_DEAD;
+        else if (cam_alive && frame_stalled)
+            next = PIPELINE_HANG; // sensor delivering + clock alive, no new publish
+        else if (!cam_alive)
+            next = CAPTURE_STALL; // no frames from the sensor/VDMA at all
+        else if (irq_stalled && irq >= 0)
+            next = IRQ_LOST;      // HW progressing but the IRQ isn't reaching us
+
+        if (next != state) {
+            if (next == HEALTHY) {
+                std::cerr << "[watchdog] recovered -> healthy\n";
+            } else {
+                std::cerr << "\n[watchdog] *** " << name(next) << " ***\n"
+                          << "  cycles="   << cycles
+                          << " frame_id="  << frame
+                          << " dropped="   << dropped
+                          << " irq="       << irq
+                          << " v4l2_seq="  << cap.sequence
+                          << " dq="        << cap.dq_count
+                          << " status=0x"  << std::hex << status << std::dec
+                          << "\n"
+                          << "  BLOB_FIFO_OVFL=" << ((status & MOCAP_REGS__STATUS_REG__BLOB_FIFO_OVFL_bm) ? 1 : 0)
+                          << " BLOB_OVERFLOW="   << ((status & MOCAP_REGS__STATUS_REG__BLOB_OVERFLOW_bm) ? 1 : 0)
+                          << " OVERRUN="         << ((status & MOCAP_REGS__STATUS_REG__OVERRUN_bm) ? 1 : 0)
+                          << "\n";
+                if (next == PIPELINE_HANG)
+                    std::cerr << "  -> sensor+clock alive but FRAME_ID frozen: "
+                                 "blob/ownership FSM deadlock (or, if dropped is "
+                                 "climbing with FIFO_OVFL, sustained overload).\n";
+                else if (next == IRQ_LOST)
+                    std::cerr << "  -> FRAME_ID moving but UIO irq count frozen: "
+                                 "frame-done interrupt lost (UIO ack/arm window).\n";
+                else if (next == CLOCK_DEAD)
+                    std::cerr << "  -> cycle counter frozen: PL clock stopped or "
+                                 "the block is held in reset.\n";
+                else if (next == CAPTURE_STALL)
+                    std::cerr << "  -> no new V4L2 frames: capture/VDMA upstream "
+                                 "of mocap has stalled (not the mocap core).\n";
+            }
+            state = next;
+            // Ask the main thread to soft-reset the block on a pipeline hang
+            // (the only class a reset can clear; clock-dead/capture-stall/irq-
+            // lost are not fixed by pulsing RESET).
+            if (next == PIPELINE_HANG)
+                g_recover_req.store(true);
+        }
+    }
+}
 
 // Bracket a CPU read of a dma-buf so the kernel makes the DMA-written bytes
 // coherent for the CPU (invalidate on START, no-op on END for a read). The
@@ -108,17 +315,23 @@ struct DrmDisplay {
     // Cached atomic property ids.
     uint32_t prop_crtc_mode_id = 0, prop_crtc_active = 0;
     uint32_t prop_conn_crtc_id = 0;
-    uint32_t prop_primary_alpha = 0; // global-alpha prop on the graphics plane
+    uint32_t prop_primary_alpha = 0; // global-alpha VALUE prop on the graphics plane
     uint64_t primary_alpha_max = 0xFFFF; // "opaque" value for that prop (its range
                                          // max; DPSUB uses 0..255, not 0..0xFFFF)
+    uint32_t prop_primary_g_alpha_en = 0; // global-alpha ENABLE prop ("g_alpha_en").
+                                          // When enabled, the DPSUB blends the
+                                          // graphics layer with the global alpha
+                                          // VALUE and IGNORES per-pixel alpha; when
+                                          // disabled, per-pixel ARGB alpha is used.
     PlaneProps pp;
     uint32_t mode_blob_id = 0;
 
     // Blob-box overlay: the RGB primary/graphics plane, composited OVER the
     // video by the DPSUB blender. When a box overlay is active we repurpose this
     // plane (instead of hiding it) to carry an ARGB8888 buffer of red box
-    // outlines, and set its global alpha opaque so per-pixel alpha shows only the
-    // boxes over the video. box_fb_id == 0 keeps the legacy "hide primary" path.
+    // outlines, and switch the blend to PER-PIXEL alpha (g_alpha_en=0) so the
+    // transparent regions reveal the video and only the boxes paint over it.
+    // box_fb_id == 0 keeps the legacy "hide primary" path (global alpha = 0).
     PlaneProps box_pp;         // FB/CRTC/SRC prop ids on the primary plane
     uint32_t box_fb_id = 0;    // ARGB8888 overlay framebuffer (0 = disabled)
 
@@ -530,6 +743,13 @@ static void drm_cache_props(DrmDisplay &d) {
                 d.primary_alpha_max = ap->values[1];
             drmModeFreeProperty(ap);
         }
+        // Vendor "g_alpha_en" bool: selects global-alpha vs per-pixel-alpha blend
+        // on the DPSUB graphics layer. Look it up non-fatally (drm_prop, not need)
+        // so a driver without it still runs; the box overlay needs it CLEARED so
+        // the ARGB per-pixel alpha (transparent except the box outlines) reveals
+        // the video underneath -- setting only the alpha VALUE opaque hides video.
+        drm_prop(d.fd, d.primary_plane_id, DRM_MODE_OBJECT_PLANE, "g_alpha_en",
+                 &d.prop_primary_g_alpha_en);
     }
     // When we drive the box overlay, we also commit FB/placement on the primary
     // plane -- cache those prop ids too (only if a primary plane exists).
@@ -579,10 +799,15 @@ static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
         // created can_position=false, so the plane MUST span the whole CRTC at
         // (0,0) -- a sub-region (e.g. capture-sized) fails the atomic check with
         // EINVAL. So the box FB is full-screen (1920x1080 ARGB = 8 MB); size CMA
-        // accordingly (cma=256M in bootargs). Global alpha opaque; the ARGB
-        // per-pixel alpha (0 except the red box outlines) lets the video show
-        // through between boxes. Boxes are drawn only in the top-left capture
-        // region, which is where all blobs live.
+        // accordingly (cma=256M in bootargs).
+        //
+        // Blend: the DPSUB graphics layer must use PER-PIXEL alpha here so the
+        // transparent (A=0) regions of the ARGB buffer reveal the video and only
+        // the box outlines paint. That means CLEARING g_alpha_en -- with global
+        // alpha ENABLED the hardware blends the whole layer by the single global
+        // value and discards per-pixel alpha, so an "opaque" global value renders
+        // the full-screen buffer as solid black over the video (black screen with
+        // boxes). The alpha VALUE is irrelevant once global alpha is disabled.
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.fb_id,
                                  d.box_fb_id);
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.crtc_id,
@@ -595,6 +820,12 @@ static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_y, 0);
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_w, w << 16);
         drmModeAtomicAddProperty(req, d.primary_plane_id, d.box_pp.src_h, h << 16);
+        // Per-pixel alpha: DISABLE global alpha so the ARGB alpha channel drives
+        // the blend. Keep the global value opaque too (ignored while disabled, but
+        // harmless and correct if a driver multiplies the two).
+        if (d.prop_primary_g_alpha_en)
+            drmModeAtomicAddProperty(req, d.primary_plane_id,
+                                     d.prop_primary_g_alpha_en, 0);
         if (d.prop_primary_alpha)
             drmModeAtomicAddProperty(req, d.primary_plane_id,
                                      d.prop_primary_alpha, d.primary_alpha_max);
@@ -603,8 +834,13 @@ static void drm_atomic_modeset(DrmDisplay &d, uint32_t fb) {
             drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.fb_id, 0);
             drmModeAtomicAddProperty(req, d.primary_plane_id, d.pp.crtc_id, 0);
         }
-        // Make the graphics layer fully transparent so the video overlay shows
-        // through the blender (the global-alpha default hides it otherwise).
+        // No box overlay: hide the graphics layer entirely. Use GLOBAL alpha at
+        // value 0 -- explicitly ENABLE global alpha (in case a prior state left it
+        // per-pixel) so the whole layer is forced transparent regardless of the
+        // buffer's own alpha, letting the video overlay show through.
+        if (d.prop_primary_g_alpha_en)
+            drmModeAtomicAddProperty(req, d.primary_plane_id,
+                                     d.prop_primary_g_alpha_en, 1);
         if (d.prop_primary_alpha)
             drmModeAtomicAddProperty(req, d.primary_plane_id, d.prop_primary_alpha,
                                      0);
@@ -1138,6 +1374,21 @@ int main(int argc, char *argv[]) {
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
+    // --- hardware-hang watchdog ---------------------------------------------
+    // Runs only when the frame-done IRQ path is active (blob overlay on), since
+    // FRAME_ID/IRQ progress is only meaningful once we arm + ACK per frame.
+    std::thread watchdog;
+    if (mocap_fd >= 0) {
+        std::string irq_label = resolve_irq_label(mocap_pipe->uio_dev_path());
+        long seed = read_irq_count(irq_label);
+        std::cout << "Watchdog: monitoring FRAME_ID/cycle/IRQ/V4L2-seq; UIO irq "
+                     "label '" << irq_label << "' ("
+                  << (seed >= 0 ? "matched /proc/interrupts"
+                                : "NOT found -- IRQ-lost detection disabled")
+                  << ")\n";
+        watchdog = std::thread(watchdog_thread, mocap_pipe.get(), irq_label);
+    }
+
     // --- ISP histogram + auto-exposure (optional) ---------------------------
 
     std::unique_ptr<IspStats> isp;
@@ -1215,9 +1466,28 @@ int main(int argc, char *argv[]) {
 
     uint64_t captured = 0, displayed = 0;
     uint64_t last_captured = 0, last_displayed = 0;
+    unsigned wd_recoveries = 0;
     auto last_report = std::chrono::steady_clock::now();
 
     while (!g_quit) {
+        // Watchdog-requested recovery: soft-reset the wedged mocap block. Done
+        // on this (the only) thread that writes mocap registers, so it can't
+        // race the ack/arm path. Symptom-level: it unwedges the FSM (disable so
+        // RESET lands in READY, then re-arm continuous capture + the IRQ) and
+        // drops the stale boxes; the underlying beat-drop desync is an RTL fix.
+        if (g_recover_req.exchange(false)) {
+            ++wd_recoveries;
+            std::cerr << "[watchdog] soft-resetting mocap block (recovery #"
+                      << wd_recoveries << ")\n";
+            mocap_pipe->disable();
+            mocap_pipe->reset();
+            mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
+                            static_cast<uint8_t>(blob_threshold));
+            if (mocap_fd >= 0)
+                mocap_pipe->arm_irq();
+            box_clear(box); // clear boxes drawn from the wedged frame
+        }
+
         pollfd pfds[3] = {
             {vfd, POLLIN, 0}, {d.fd, POLLIN, 0}, {mocap_fd, POLLIN, 0}};
         const nfds_t nfds = (mocap_fd >= 0) ? 3 : 2;
@@ -1283,6 +1553,8 @@ int main(int argc, char *argv[]) {
                     continue;
                 fail("VIDIOC_DQBUF");
             }
+            // Publish capture progress for the watchdog (semaphore-guarded).
+            publish_capture_beat(buf.sequence);
             const size_t used = mplane ? planes[0].bytesused : buf.bytesused;
             if (used == 0) {
                 qbuf(buf.index);
@@ -1346,6 +1618,11 @@ int main(int argc, char *argv[]) {
     }
 
     // --- cleanup ------------------------------------------------------------
+
+    // Stop the watchdog first: it reads mocap registers, so join it before we
+    // tear the pipeline down (g_quit is already set by the loop exit/signal).
+    if (watchdog.joinable())
+        watchdog.join();
 
     if (xioctl(vfd, VIDIOC_STREAMOFF, &type_int) == -1)
         std::cerr << "warning: VIDIOC_STREAMOFF: " << strerror(errno) << "\n";

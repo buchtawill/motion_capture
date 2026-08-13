@@ -68,8 +68,10 @@ public:
             return nullptr;
         }
         std::cout << "MocapPipeline: opened " << uio_path << "\n";
-        return std::unique_ptr<MocapPipeline>(
+        auto p = std::unique_ptr<MocapPipeline>(
             new MocapPipeline(fd, static_cast<volatile mocap_regs_t *>(map)));
+        p->uio_dev_path_ = uio_path;
+        return p;
     }
 
     static std::unique_ptr<MocapPipeline> discover(
@@ -262,6 +264,11 @@ public:
     // reports POLLIN, drain_irq() to consume the event, then read blobs, ack(),
     // and arm_irq() again to re-enable the next frame-done interrupt.
     int uio_fd() const { return fd_; }
+
+    // The /dev/uioN path this pipeline was opened on. Useful to a supervisor that
+    // wants to correlate hardware progress against the UIO interrupt count in
+    // /proc/interrupts (resolve the label via /sys/class/uio/uioN/device).
+    const std::string &uio_dev_path() const { return uio_dev_path_; }
     bool arm_irq() {
         uint32_t one = 1;
         return ::write(fd_, &one, sizeof(one)) ==
@@ -318,6 +325,8 @@ private:
                             MOCAP_REGS__CTRL_REG__BLOB_ADDR_AUTOINC_bm |
                             (MOCAP_REGS__CTRL_REG__THRESHOLD_reset
                              << MOCAP_REGS__CTRL_REG__THRESHOLD_bp);
+
+    std::string uio_dev_path_;
 
     MocapPipeline(int fd, volatile mocap_regs_t *regs) : fd_(fd), regs_(regs) {}
 

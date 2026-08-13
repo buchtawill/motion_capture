@@ -16,6 +16,9 @@ all: build package deploy
 config:
 	petalinux-config --get-hw-description ./../../vivado/kv260_ov9281/kv260_ov9281_proj/kv260_ov9281_proj.xsa
 
+silent-config:
+	petalinux-config --get-hw-description ./../../vivado/kv260_ov9281/kv260_ov9281_proj/kv260_ov9281_proj.xsa --silentconfig
+
 build:
 	@start=$$(date +%s); \
 	petalinux-build; rc=$$?; \
