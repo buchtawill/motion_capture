@@ -133,6 +133,11 @@ public:
     // block (with hres/vres matching the sensor frame) for video to reach the
     // sink at all; leaving it disabled stalls the stream. hres must be a multiple
     // of 4.
+    // GFI (Gaussian 3x3 pre-filter on the blob snoop path) presets. GFI only
+    // affects what the blob detector sees; the video passthrough and the
+    // histogram/AE path always see raw luma.
+    enum GfiStrength : uint8_t { GFI_LIGHT = 0, GFI_MEDIUM = 1, GFI_STRONG = 2 };
+
     void arm(uint16_t hres, uint16_t vres, uint8_t threshold) {
         regs_->HRES = hres;
         regs_->VRES = vres;
@@ -142,6 +147,12 @@ public:
                        ((static_cast<uint32_t>(threshold)
                          << MOCAP_REGS__CTRL_REG__THRESHOLD_bp) &
                         MOCAP_REGS__CTRL_REG__THRESHOLD_bm);
+        // Enable the GFI denoise pre-filter by default (medium preset). Turn it
+        // off or change the preset at runtime with set_gfi().
+        ctrl_shadow_ |= MOCAP_REGS__CTRL_REG__GFI_ENABLE_bm |
+                        ((static_cast<uint32_t>(GFI_MEDIUM)
+                          << MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bp) &
+                         MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bm);
         regs_->CTRL = ctrl_shadow_;
     }
 
@@ -163,6 +174,27 @@ public:
         return static_cast<uint8_t>((ctrl_shadow_ &
                                      MOCAP_REGS__CTRL_REG__THRESHOLD_bm) >>
                                     MOCAP_REGS__CTRL_REG__THRESHOLD_bp);
+    }
+
+    // Enable/disable the GFI Gaussian pre-filter and/or change its preset in
+    // place (0=light, 1=medium, 2=strong). Safe to call while armed.
+    void set_gfi(bool enable, uint8_t strength = GFI_MEDIUM) {
+        ctrl_shadow_ &= ~(MOCAP_REGS__CTRL_REG__GFI_ENABLE_bm |
+                          MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bm);
+        if (enable)
+            ctrl_shadow_ |= MOCAP_REGS__CTRL_REG__GFI_ENABLE_bm;
+        ctrl_shadow_ |= ((static_cast<uint32_t>(strength)
+                          << MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bp) &
+                         MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bm);
+        regs_->CTRL = ctrl_shadow_;
+    }
+    bool gfi_enabled() const {
+        return (ctrl_shadow_ & MOCAP_REGS__CTRL_REG__GFI_ENABLE_bm) != 0;
+    }
+    uint8_t gfi_strength() const {
+        return static_cast<uint8_t>((ctrl_shadow_ &
+                                     MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bm) >>
+                                    MOCAP_REGS__CTRL_REG__GFI_STRENGTH_bp);
     }
 
     // Soft reset: clears counters/buffers/status/FRAME_ID/DROPPED_FRAMES. Does
