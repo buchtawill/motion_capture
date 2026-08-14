@@ -8,34 +8,40 @@
 //
 // ARCHITECTURE: serial receive/emit (no concurrent recv+emit -> no lockstep
 // hazards). One row at a time:
-//   RECV  : accept exactly hres/4 input beats of input row r into a line
-//           buffer. s_ready high (we are accepting).
-//   EMIT  : then stream hres/4 output beats of ONE output row, reading the
-//           three most-recent rows back from the buffers. s_ready LOW (we are
-//           not accepting), so input and output can never drift.
+//   RECV : accept exactly hres/4 input beats of input row r into the line
+//          buffers. s_ready high (accepting).
+//   EMIT : then stream hres/4 output beats of ONE output row, reading the three
+//          most-recent rows back. s_ready LOW (not accepting), so input and
+//          output can never drift.
 // Schedule (output row ro uses input rows ro-1, ro, ro+1; borders replicate):
 //   recv row 0            -> no emit (priming, just store row 0)
 //   recv row r (1..V-1)   -> EMIT output row r-1  (top replicate when r==1)
-//   recv row V-1 (last)   -> EMIT output row V-2, then EMIT output row V-1
-//                            with the bottom border replicated.
+//   recv row V-1 (last)   -> EMIT output row V-2, then EMIT output row V-1 with
+//                            the bottom border replicated.
 // -> exactly (hres/4)*vres output beats/frame, m_sof on the first output beat,
 //    m_eol on each output row's last beat. Throughput ~0.5 beat/cycle; at
 //    200 MHz (~400 Mpx/s) that is >6x the camera rate, so it never bottlenecks
-//    the best-effort blob snoop path.
+//    the best-effort blob snoop path -- and it leaves plenty of headroom to
+//    PIPELINE the read/filter for timing.
 //
-// Line buffers: 3 x (MAX_WIDTH/4) x 32b, ASYNC read (distributed RAM) so the
-// read latency is identical in simulation and synthesis (a registered BRAM
-// read would add a cycle in synth only). One 32b word == one beat == 4 px.
+// LINE BUFFERS = BLOCK RAM. For a 3x3 the horizontal window needs three words
+// per row (columns c-1/c/c+1). BRAM has limited read ports, so each of the 3
+// line buffers is REPLICATED x3 (bXl/bXc/bXr, written identically) giving one
+// registered read port per neighbour -- all three window words per row are read
+// in parallel from block RAM. One 32b word == one beat == 4 px.
 //
-// Pixel packing: s_data[7:0]=px0 (leftmost) .. s_data[31:24]=px3 (rightmost).
-// Horizontal 3x3 crosses beat boundaries: output pixel column 4c-1 is the prev
-// beat's px3, 4c+4 is the next beat's px0 -- handled by reading words c-1/c/c+1
-// (address-clamped) and picking the right byte; column 0 / last column
-// replicate their own edge pixel.
+// PIPELINE (EMIT), all stages gated by pipe_adv so backpressure stalls the whole
+// thing losslessly:
+//   S0  ecol -> read addresses a_l/a_c/a_r; metadata (roles, borders, sof/eol,
+//       valid, enable/strength) computed for this column.
+//   S1  BRAM registered reads (9 words) + metadata reg.
+//   S2  role mux -> 9 window words registered + metadata reg.
+//   S3  border mux + weighted sum + round -> m_data (+ sof/eol/valid).
+// So m_data lags the read address by 3 cycles; the metadata pipe keeps sof/eol/
+// valid aligned. Pixel packing: s_data[7:0]=px0 (leftmost)..[31:24]=px3.
 //
 // Bypass (enable=0): output == the centre (mid) pixel, out of the same pipeline
-// so latency never changes. enable/strength are latched at the s_sof beat and
-// held for the whole frame.
+// so latency never changes. enable/strength latched at s_sof, held per frame.
 // =============================================================================
 
 module gfi #(
@@ -69,15 +75,21 @@ module gfi #(
     localparam int BEATS_MAX = MAX_WIDTH / PX_PER_BEAT;
     localparam int AW        = $clog2(BEATS_MAX);
 
-    // Three line buffers, async (distributed) read.
-    (* ram_style = "distributed" *) logic [31:0] lb0 [0:BEATS_MAX-1];
-    (* ram_style = "distributed" *) logic [31:0] lb1 [0:BEATS_MAX-1];
-    (* ram_style = "distributed" *) logic [31:0] lb2 [0:BEATS_MAX-1];
+    // 3 line buffers, each replicated x3 (left/centre/right read port). BRAM.
+    (* ram_style = "block" *) logic [31:0] b0l [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b0c [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b0r [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b1l [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b1c [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b1r [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b2l [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b2c [0:BEATS_MAX-1];
+    (* ram_style = "block" *) logic [31:0] b2r [0:BEATS_MAX-1];
 
     wire [15:0] hbeats = {2'b0, hres[15:2]};   // hres/4 (hres is a mult of 4)
 
     // =========================================================================
-    // Control state
+    // Control state (FSM)
     // =========================================================================
     localparam logic S_RECV = 1'b0, S_EMIT = 1'b1;
     logic        state;
@@ -86,24 +98,18 @@ module gfi #(
     logic [15:0] rcol;         // beat index within the receiving row
     logic [1:0]  wsel;         // buffer holding the row being received (0/1/2)
 
-    logic [15:0] ecol;         // output beat index during EMIT
+    logic [15:0] ecol;         // output beat index (read-address stage) during EMIT
     logic        emit_bottom;  // this EMIT is the trailing bottom-replicate row
 
     logic        frame_en;     // latched enable for the current frame
     logic [1:0]  frame_str;    // latched strength for the current frame
 
-    // next-buffer helper (mod 3)
     function automatic logic [1:0] nsel(input logic [1:0] s);
         nsel = (s == 2'd2) ? 2'd0 : (s + 2'd1);
     endfunction
 
     // =========================================================================
-    // EMIT buffer-role selection (combinational)
-    //   normal emit  -> output row = row_idx-1, uses rows r-2/r-1/r =
-    //                   bufs (wsel+1)/(wsel+2)/(wsel) ; top replicates when
-    //                   the output row is 0.
-    //   bottom emit  -> output row = row_idx (== vres-1), uses rows r-1/r/(r) ;
-    //                   top = (wsel+2), mid = wsel, bottom replicates mid.
+    // S0: per-column metadata (roles / borders / sof-eol / valid / cfg)
     // =========================================================================
     logic [15:0] emit_row;
     logic [1:0]  top_buf, mid_buf, bot_buf;
@@ -114,146 +120,171 @@ module gfi #(
         if (emit_bottom) begin
             mid_buf = wsel;
             top_buf = (wsel == 2'd0) ? 2'd2 : (wsel - 2'd1);   // (wsel+2)%3
-            bot_buf = wsel;                                    // (unused: replicated)
+            bot_buf = wsel;
             top_rep = 1'b0;
             bot_rep = 1'b1;
         end else begin
             bot_buf = wsel;                                    // row r
-            mid_buf = (wsel == 2'd0) ? 2'd2 : (wsel - 2'd1);   // (wsel+2)%3 -> row r-1
-            top_buf = (wsel == 2'd2) ? 2'd0 : (wsel + 2'd1);   // (wsel+1)%3 -> row r-2
+            mid_buf = (wsel == 2'd0) ? 2'd2 : (wsel - 2'd1);   // (wsel+2)%3 -> r-1
+            top_buf = (wsel == 2'd2) ? 2'd0 : (wsel + 2'd1);   // (wsel+1)%3 -> r-2
             top_rep = (emit_row == 16'd0);                     // top border
             bot_rep = 1'b0;
         end
     end
 
-    // Effective buffers after vertical-border replication.
     wire [1:0] eff_top = top_rep ? mid_buf : top_buf;
     wire [1:0] eff_bot = bot_rep ? mid_buf : bot_buf;
 
-    // Column addresses (clamped) for the horizontal window.
+    // read addresses (clamped) for this column
     wire [AW-1:0] a_c = ecol[AW-1:0];
     wire [AW-1:0] a_l = (ecol == 16'd0)            ? ecol[AW-1:0] : (ecol[AW-1:0] - 1'b1);
     wire [AW-1:0] a_r = (ecol == (hbeats - 16'd1)) ? ecol[AW-1:0] : (ecol[AW-1:0] + 1'b1);
-    wire          col_first = (ecol == 16'd0);
-    wire          col_last  = (ecol == (hbeats - 16'd1));
 
-    // Direct async reads of each buffer at each of the 3 column addresses. Must
-    // be direct mem[addr] indexing in the continuous assigns (NOT wrapped in a
-    // function) so the read stays sensitive to line-buffer writes.
-    wire [31:0] w0_l = lb0[a_l], w0_c = lb0[a_c], w0_r = lb0[a_r];
-    wire [31:0] w1_l = lb1[a_l], w1_c = lb1[a_c], w1_r = lb1[a_r];
-    wire [31:0] w2_l = lb2[a_l], w2_c = lb2[a_c], w2_r = lb2[a_r];
+    // Metadata carried down the pipeline so sof/eol/roles/borders stay aligned.
+    typedef struct packed {
+        logic        valid;
+        logic        sof;
+        logic        eol;
+        logic        col_first;
+        logic        col_last;
+        logic [1:0]  eff_top;
+        logic [1:0]  mid_buf;
+        logic [1:0]  eff_bot;
+        logic        en;
+        logic [1:0]  str;
+    } meta_t;
 
-    // Three words per row (left/centre/right beat), muxed by the effective role.
-    wire [31:0] tl = (eff_top == 2'd0) ? w0_l : (eff_top == 2'd1) ? w1_l : w2_l;
-    wire [31:0] tc = (eff_top == 2'd0) ? w0_c : (eff_top == 2'd1) ? w1_c : w2_c;
-    wire [31:0] tr = (eff_top == 2'd0) ? w0_r : (eff_top == 2'd1) ? w1_r : w2_r;
-    wire [31:0] ml = (mid_buf == 2'd0) ? w0_l : (mid_buf == 2'd1) ? w1_l : w2_l;
-    wire [31:0] mc = (mid_buf == 2'd0) ? w0_c : (mid_buf == 2'd1) ? w1_c : w2_c;
-    wire [31:0] mr = (mid_buf == 2'd0) ? w0_r : (mid_buf == 2'd1) ? w1_r : w2_r;
-    wire [31:0] bl = (eff_bot == 2'd0) ? w0_l : (eff_bot == 2'd1) ? w1_l : w2_l;
-    wire [31:0] bc = (eff_bot == 2'd0) ? w0_c : (eff_bot == 2'd1) ? w1_c : w2_c;
-    wire [31:0] br = (eff_bot == 2'd0) ? w0_r : (eff_bot == 2'd1) ? w1_r : w2_r;
+    meta_t m0, m1, m2;
+    always_comb begin
+        m0.valid     = (state == S_EMIT) && (ecol < hbeats);
+        m0.sof       = (emit_row == 16'd0) && (ecol == 16'd0) && !emit_bottom;
+        m0.eol       = (ecol == (hbeats - 16'd1));
+        m0.col_first = (ecol == 16'd0);
+        m0.col_last  = (ecol == (hbeats - 16'd1));
+        m0.eff_top   = eff_top;
+        m0.mid_buf   = mid_buf;
+        m0.eff_bot   = eff_bot;
+        m0.en        = frame_en;
+        m0.str       = frame_str;
+    end
 
+    // =========================================================================
+    // Handshake / pipeline advance
+    // =========================================================================
+    assign s_ready = (state == S_RECV);
+    wire   in_fire  = s_valid && s_ready;
+    wire   pipe_adv = (state == S_EMIT) && (!m_valid || m_ready);
+    // last output beat of the row leaves the pipe when the eol metadata reaches S3
+    wire   emit_row_done = pipe_adv && m2.valid && m2.eol;
+
+    // =========================================================================
+    // Line-buffer write (RECV): write all 3 replicas of the target buffer.
+    // Registered reads (S1): one read port per neighbour, gated by pipe_adv.
+    // =========================================================================
+    logic [31:0] q0l,q0c,q0r, q1l,q1c,q1r, q2l,q2c,q2r;
+
+    always_ff @(posedge clk) begin
+        if (in_fire) begin
+            case (wsel)
+                2'd0: begin b0l[rcol[AW-1:0]]<=s_data; b0c[rcol[AW-1:0]]<=s_data; b0r[rcol[AW-1:0]]<=s_data; end
+                2'd1: begin b1l[rcol[AW-1:0]]<=s_data; b1c[rcol[AW-1:0]]<=s_data; b1r[rcol[AW-1:0]]<=s_data; end
+                default: begin b2l[rcol[AW-1:0]]<=s_data; b2c[rcol[AW-1:0]]<=s_data; b2r[rcol[AW-1:0]]<=s_data; end
+            endcase
+        end
+        if (pipe_adv) begin
+            q0l<=b0l[a_l]; q0c<=b0c[a_c]; q0r<=b0r[a_r];
+            q1l<=b1l[a_l]; q1c<=b1c[a_c]; q1r<=b1r[a_r];
+            q2l<=b2l[a_l]; q2c<=b2c[a_c]; q2r<=b2r[a_r];
+        end
+    end
+
+    // S2: role mux of the registered reads -> 9 window words, registered.
+    wire [31:0] tl_c = (m1.eff_top==2'd0)?q0l:(m1.eff_top==2'd1)?q1l:q2l;
+    wire [31:0] tc_c = (m1.eff_top==2'd0)?q0c:(m1.eff_top==2'd1)?q1c:q2c;
+    wire [31:0] tr_c = (m1.eff_top==2'd0)?q0r:(m1.eff_top==2'd1)?q1r:q2r;
+    wire [31:0] ml_c = (m1.mid_buf==2'd0)?q0l:(m1.mid_buf==2'd1)?q1l:q2l;
+    wire [31:0] mc_c = (m1.mid_buf==2'd0)?q0c:(m1.mid_buf==2'd1)?q1c:q2c;
+    wire [31:0] mr_c = (m1.mid_buf==2'd0)?q0r:(m1.mid_buf==2'd1)?q1r:q2r;
+    wire [31:0] bl_c = (m1.eff_bot==2'd0)?q0l:(m1.eff_bot==2'd1)?q1l:q2l;
+    wire [31:0] bc_c = (m1.eff_bot==2'd0)?q0c:(m1.eff_bot==2'd1)?q1c:q2c;
+    wire [31:0] br_c = (m1.eff_bot==2'd0)?q0r:(m1.eff_bot==2'd1)?q1r:q2r;
+
+    logic [31:0] tl,tc,tr, ml,mc,mr, bl,bc,br;
+
+    // metadata + window pipeline registers
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            m1.valid <= 1'b0; m2.valid <= 1'b0;
+        end else begin
+            // Flush the pipeline valids outside EMIT so a new EMIT starts clean.
+            if (state != S_EMIT) begin
+                m1.valid <= 1'b0; m2.valid <= 1'b0;
+            end else if (pipe_adv) begin
+                m1 <= m0;
+                m2 <= m1;
+            end
+        end
+        if (pipe_adv) begin
+            tl<=tl_c; tc<=tc_c; tr<=tr_c;
+            ml<=ml_c; mc<=mc_c; mr<=mr_c;
+            bl<=bl_c; bc<=bc_c; br<=br_c;
+        end
+    end
+
+    // =========================================================================
+    // S3: 3x3 window (border replicate) + weighted sum (shift-add) -> out_word
+    // =========================================================================
     function automatic logic [7:0] bof(input logic [31:0] w, input int idx);
         bof = w[8*idx +: 8];
     endfunction
 
-    // =========================================================================
-    // Per-output-pixel 3x3 window + weighted sum (shift-add, bit-exact to model)
-    // =========================================================================
     logic [7:0] out_px [0:3];
-
     always_comb begin
         for (int i = 0; i < 4; i++) begin
-            automatic logic [7:0] t_l, t_c, t_r, m_l, m_c, m_r, b_l, b_c, b_r;
-
-            // centre column of this output pixel
+            automatic logic [7:0] t_l,t_c,t_r, m_l,m_c,m_r, b_l,b_c,b_r;
             t_c = bof(tc, i);  m_c = bof(mc, i);  b_c = bof(bc, i);
-
-            // left neighbour (pixel column 4c+i-1)
             if (i == 0) begin
-                t_l = col_first ? bof(tc, 0) : bof(tl, 3);
-                m_l = col_first ? bof(mc, 0) : bof(ml, 3);
-                b_l = col_first ? bof(bc, 0) : bof(bl, 3);
+                t_l = m2.col_first ? bof(tc,0) : bof(tl,3);
+                m_l = m2.col_first ? bof(mc,0) : bof(ml,3);
+                b_l = m2.col_first ? bof(bc,0) : bof(bl,3);
             end else begin
-                t_l = bof(tc, i - 1);  m_l = bof(mc, i - 1);  b_l = bof(bc, i - 1);
+                t_l = bof(tc,i-1); m_l = bof(mc,i-1); b_l = bof(bc,i-1);
             end
-
-            // right neighbour (pixel column 4c+i+1)
             if (i == 3) begin
-                t_r = col_last ? bof(tc, 3) : bof(tr, 0);
-                m_r = col_last ? bof(mc, 3) : bof(mr, 0);
-                b_r = col_last ? bof(bc, 3) : bof(br, 0);
+                t_r = m2.col_last ? bof(tc,3) : bof(tr,0);
+                m_r = m2.col_last ? bof(mc,3) : bof(mr,0);
+                b_r = m2.col_last ? bof(bc,3) : bof(br,0);
             end else begin
-                t_r = bof(tc, i + 1);  m_r = bof(mc, i + 1);  b_r = bof(bc, i + 1);
+                t_r = bof(tc,i+1); m_r = bof(mc,i+1); b_r = bof(bc,i+1);
             end
-
             begin
-                automatic logic [10:0] sum4;     // edge neighbours: TC+ML+MR+BC
-                automatic logic [10:0] corners;  // TL+TR+BL+BR
-                automatic logic [12:0] acc;      // weighted sum, max 16*255=4080
-
-                sum4    = {3'b0, t_c} + {3'b0, m_l} + {3'b0, m_r} + {3'b0, b_c};
-                corners = {3'b0, t_l} + {3'b0, t_r} + {3'b0, b_l} + {3'b0, b_r};
-
-                unique case (frame_str)
-                    2'd0:    acc = {2'b0, sum4} + ({5'b0, m_c} << 3) + ({5'b0, m_c} << 2); // light  (+12*mc)
-                    2'd1:    acc = ({2'b0, sum4} << 1) + {2'b0, corners} + ({5'b0, m_c} << 2); // medium
-                    2'd2:    acc = ({2'b0, sum4} + {2'b0, corners}) << 1;                     // strong
-                    default: acc = {2'b0, sum4} + ({5'b0, m_c} << 3) + ({5'b0, m_c} << 2);
+                automatic logic [10:0] sum4, corners;
+                automatic logic [12:0] acc;
+                sum4    = {3'b0,t_c} + {3'b0,m_l} + {3'b0,m_r} + {3'b0,b_c};
+                corners = {3'b0,t_l} + {3'b0,t_r} + {3'b0,b_l} + {3'b0,b_r};
+                unique case (m2.str)
+                    2'd0:    acc = {2'b0,sum4} + ({5'b0,m_c}<<3) + ({5'b0,m_c}<<2); // light
+                    2'd1:    acc = ({2'b0,sum4}<<1) + {2'b0,corners} + ({5'b0,m_c}<<2); // medium
+                    2'd2:    acc = ({2'b0,sum4} + {2'b0,corners})<<1;                 // strong
+                    default: acc = {2'b0,sum4} + ({5'b0,m_c}<<3) + ({5'b0,m_c}<<2);
                 endcase
-
-                out_px[i] = frame_en ? ((acc + 13'd8) >> 4) : m_c;   // bypass = centre px
+                out_px[i] = m2.en ? ((acc + 13'd8) >> 4) : m_c;   // bypass = centre
             end
         end
     end
-
     wire [31:0] out_word = {out_px[3], out_px[2], out_px[1], out_px[0]};
 
     // =========================================================================
-    // Handshake
-    // =========================================================================
-    assign s_ready = (state == S_RECV);
-    wire   in_fire  = s_valid && s_ready;
-    wire   emit_adv = (state == S_EMIT) && (!m_valid || m_ready);
-    wire   emit_last_beat = emit_adv && (ecol == (hbeats - 16'd1));
-
-    // Was the row we just received the last one of the frame?
-    wire   recv_row_last = in_fire && s_eol && (row_idx == (vres - 16'd1));
-
-    // =========================================================================
-    // Line-buffer write (RECV only)
-    // =========================================================================
-    always_ff @(posedge clk) begin
-        if (in_fire) begin
-            case (wsel)
-                2'd0:    lb0[rcol[AW-1:0]] <= s_data;
-                2'd1:    lb1[rcol[AW-1:0]] <= s_data;
-                default: lb2[rcol[AW-1:0]] <= s_data;
-            endcase
-        end
-    end
-
-    // =========================================================================
-    // Control FSM
+    // FSM
     // =========================================================================
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            state       <= S_RECV;
-            row_idx     <= 16'd0;
-            rcol        <= 16'd0;
-            wsel        <= 2'd0;
-            ecol        <= 16'd0;
-            emit_bottom <= 1'b0;
-            frame_en    <= 1'b0;
-            frame_str   <= 2'd0;
+            state <= S_RECV; row_idx <= 16'd0; rcol <= 16'd0; wsel <= 2'd0;
+            ecol <= 16'd0; emit_bottom <= 1'b0; frame_en <= 1'b0; frame_str <= 2'd0;
         end else begin
             case (state)
-                // -------------------------------------------------------------
                 S_RECV: begin
                     if (in_fire) begin
-                        // sof beat: (re)start the frame at row 0, latch config
                         if (s_sof) begin
                             row_idx   <= 16'd0;
                             frame_en  <= enable;
@@ -262,12 +293,10 @@ module gfi #(
                         if (s_eol) begin
                             rcol <= 16'd0;
                             if ((s_sof ? 16'd0 : row_idx) == 16'd0) begin
-                                // row 0 complete: no emit, go receive row 1
-                                row_idx <= 16'd1;
+                                row_idx <= 16'd1;          // row 0 stored, no emit
                                 wsel    <= nsel(wsel);
                             end else begin
-                                // rows 1..V-1: emit the previous output row
-                                state       <= S_EMIT;
+                                state       <= S_EMIT;     // emit output row r-1
                                 ecol        <= 16'd0;
                                 emit_bottom <= 1'b0;
                             end
@@ -276,20 +305,17 @@ module gfi #(
                         end
                     end
                 end
-                // -------------------------------------------------------------
                 S_EMIT: begin
-                    if (emit_adv) ecol <= ecol + 16'd1;
-                    if (emit_last_beat) begin
+                    if (pipe_adv && (ecol < hbeats)) ecol <= ecol + 16'd1;
+                    if (emit_row_done) begin
                         if (!emit_bottom && (row_idx == (vres - 16'd1))) begin
-                            // last input row: do the trailing bottom-replicate row
-                            emit_bottom <= 1'b1;
+                            emit_bottom <= 1'b1;           // trailing bottom row
                             ecol        <= 16'd0;
                         end else begin
-                            // this row's emit(s) done -> receive next input row
                             state       <= S_RECV;
                             emit_bottom <= 1'b0;
                             ecol        <= 16'd0;
-                            row_idx     <= row_idx + 16'd1;   // reset to 0 by next sof
+                            row_idx     <= row_idx + 16'd1;
                             wsel        <= nsel(wsel);
                         end
                     end
@@ -299,19 +325,16 @@ module gfi #(
     end
 
     // =========================================================================
-    // Output register (single-beat, lossless: load only when !m_valid||m_ready)
+    // Output register (single-beat, lossless): load from S3 on pipe_adv.
     // =========================================================================
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            m_valid <= 1'b0;
-            m_data  <= 32'd0;
-            m_sof   <= 1'b0;
-            m_eol   <= 1'b0;
-        end else if (emit_adv) begin
-            m_valid <= 1'b1;
+            m_valid <= 1'b0; m_data <= 32'd0; m_sof <= 1'b0; m_eol <= 1'b0;
+        end else if (pipe_adv) begin
+            m_valid <= m2.valid;
             m_data  <= out_word;
-            m_sof   <= (emit_row == 16'd0) && (ecol == 16'd0) && !emit_bottom;
-            m_eol   <= (ecol == (hbeats - 16'd1));
+            m_sof   <= m2.sof;
+            m_eol   <= m2.eol;
         end else if (m_valid && m_ready) begin
             m_valid <= 1'b0;
         end
