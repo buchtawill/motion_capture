@@ -67,6 +67,7 @@
 
 #include "box_overlay.hpp"
 #include "drm_display.hpp"
+#include "screen_capture.hpp"
 #include "signals.hpp"
 #include "test_pattern.hpp"
 #include "v4l2_capture.hpp"
@@ -404,6 +405,13 @@ int main(int argc, char *argv[]) {
         watchdog = std::thread(watchdog_thread, mocap_pipe.get(), irq_label);
     }
 
+    // --- stdin frame-grab thread --------------------------------------------
+    // Watches stdin for Enter and flags g_save_req; the render loop performs the
+    // actual save (it owns the on-screen buffer -- see screen_capture.hpp).
+    std::thread stdin_mon(stdin_monitor_thread);
+    std::cout << "Press Enter to save the current on-screen frame to a raw "
+                 "8-bit .gray file in the cwd.\n";
+
     // --- ISP histogram + auto-exposure (optional) ---------------------------
 
     std::unique_ptr<IspStats> isp;
@@ -501,6 +509,25 @@ int main(int argc, char *argv[]) {
             if (mocap_fd >= 0)
                 mocap_pipe->arm_irq();
             box_clear(box); // clear boxes drawn from the wedged frame
+        }
+
+        // Enter pressed on stdin: save the current on-screen luma frame. Done
+        // here (not on the stdin thread) because this thread owns fb_screen and
+        // will not re-queue it to V4L2 until the next flip, so the DMA cannot
+        // overwrite it mid-write. GREY is 8-bit, so the buffer is the raw image.
+        if (g_save_req.exchange(false)) {
+            if (fb_screen >= 0) {
+                dmabuf_sync_read(slot[fb_screen].dmabuf_fd, true);
+                std::string path =
+                    save_screen_raw(slot[fb_screen].map, gw, gh, luma_stride);
+                dmabuf_sync_read(slot[fb_screen].dmabuf_fd, false);
+                if (!path.empty())
+                    std::cout << "saved current frame -> " << path << "  (view: "
+                                 "convert -size " << gw << "x" << gh
+                              << " -depth 8 gray:" << path << " out.png)\n";
+            } else {
+                std::cerr << "no frame on screen yet; nothing to save\n";
+            }
         }
 
         pollfd pfds[3] = {
@@ -638,6 +665,11 @@ int main(int argc, char *argv[]) {
     // tear the pipeline down (g_quit is already set by the loop exit/signal).
     if (watchdog.joinable())
         watchdog.join();
+
+    // Stop the stdin frame-grab thread (it polls with a 200 ms timeout, so it
+    // observes g_quit and returns promptly).
+    if (stdin_mon.joinable())
+        stdin_mon.join();
 
     if (xioctl(vfd, VIDIOC_STREAMOFF, &type_int) == -1)
         std::cerr << "warning: VIDIOC_STREAMOFF: " << strerror(errno) << "\n";

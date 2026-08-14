@@ -26,6 +26,8 @@ SRC_URI = "file://main.cpp \
            file://watchdog.cpp \
            file://test_pattern.hpp \
            file://test_pattern.cpp \
+           file://screen_capture.hpp \
+           file://screen_capture.cpp \
            file://Makefile \
 		  "
 
