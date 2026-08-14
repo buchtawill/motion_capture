@@ -13,7 +13,19 @@ DEPENDS = "mocap-common libdrm"
 # libdrm's headers live in ${includedir}/libdrm (xf86drm.h -> <drm.h>).
 inherit pkgconfig
 
-SRC_URI = "file://mocap-hdmi-drm.cpp \
+SRC_URI = "file://main.cpp \
+           file://signals.hpp \
+           file://signals.cpp \
+           file://drm_display.hpp \
+           file://drm_display.cpp \
+           file://box_overlay.hpp \
+           file://box_overlay.cpp \
+           file://v4l2_capture.hpp \
+           file://v4l2_capture.cpp \
+           file://watchdog.hpp \
+           file://watchdog.cpp \
+           file://test_pattern.hpp \
+           file://test_pattern.cpp \
            file://Makefile \
 		  "
 
