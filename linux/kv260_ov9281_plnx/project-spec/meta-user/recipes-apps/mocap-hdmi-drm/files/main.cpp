@@ -93,7 +93,7 @@ int main(int argc, char *argv[]) {
         .default_value(std::string("DP-1"))
         .help("DRM connector name (KV260 HDMI enumerates as DP)");
     program.add_argument("--mode")
-        .default_value(std::string("1280x720"))
+        .default_value(std::string("1280x800"))
         .help("capture mode (sets width/height): " + sensor_modes_str() +
               ". Displayed top-left in a 1920x1080 black letterbox (no scaler)");
     program.add_argument("-W", "--width")
@@ -101,7 +101,7 @@ int main(int argc, char *argv[]) {
         .scan<'u', unsigned>()
         .help("frame width (ignored if --mode is given)");
     program.add_argument("-H", "--height")
-        .default_value(720u)
+        .default_value(800u)
         .scan<'u', unsigned>()
         .help("frame height (ignored if --mode is given)");
     program.add_argument("-f", "--format")
