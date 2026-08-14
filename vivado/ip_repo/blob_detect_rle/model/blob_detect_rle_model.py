@@ -21,7 +21,7 @@ import argparse
 import json
 import sys
 
-MAX_BLOBS = 128
+MAX_BLOBS = 64  # matches the deployed mocap wrapper's blob_table capacity
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ def run_model(hex_path: str, width: int, height: int, threshold: int) -> list:
       sum_y: int   (sum of y coordinates of foreground pixels)
       xmin, xmax, ymin, ymax: int  (pixel-exact bounding box)
 
-    MAX_BLOBS = 128; blobs beyond that limit are silently dropped.
+    MAX_BLOBS = 64; blobs beyond that limit are silently dropped.
     All arithmetic is integer — no floats.
     """
     pixels = load_hex_frame(hex_path, width, height)
