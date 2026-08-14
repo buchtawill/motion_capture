@@ -176,6 +176,11 @@ int main(int argc, char *argv[]) {
         .default_value(3u)
         .scan<'u', unsigned>()
         .help("red box outline thickness in pixels");
+    program.add_argument("--gfi-cycle")
+        .default_value(false)
+        .implicit_value(true)
+        .help("demo: cycle the GFI pre-filter off->light->medium->strong, one "
+              "step per second (4 s per full loop)");
 
     try {
         program.parse_args(argc, argv);
@@ -207,6 +212,7 @@ int main(int argc, char *argv[]) {
     const bool quiet_stats = program.get<bool>("--quiet-stats");
     const bool test_mode = program.get<bool>("--test");
     const bool blobs_disabled = program.get<bool>("--no-blobs");
+    const bool gfi_cycle = program.get<bool>("--gfi-cycle");
     const unsigned blob_threshold = program.get<unsigned>("--threshold");
     const unsigned box_thickness = program.get<unsigned>("--box-thickness");
 
@@ -492,6 +498,8 @@ int main(int argc, char *argv[]) {
     uint64_t last_captured = 0, last_displayed = 0;
     unsigned wd_recoveries = 0;
     auto last_report = std::chrono::steady_clock::now();
+    auto gfi_last = std::chrono::steady_clock::now();
+    int  gfi_mode = 0;   // 0=off 1=light 2=medium 3=strong (used by --gfi-cycle)
 
     while (!g_quit) {
         // Watchdog-requested recovery: soft-reset the wedged mocap block. Done
@@ -510,6 +518,23 @@ int main(int argc, char *argv[]) {
             if (mocap_fd >= 0)
                 mocap_pipe->arm_irq();
             box_clear(box); // clear boxes drawn from the wedged frame
+        }
+
+        // GFI demo: cycle the pre-filter off->light->medium->strong, one step
+        // per second, so the effect is visible live in the box overlay.
+        if (gfi_cycle && mocap_pipe) {
+            auto now = std::chrono::steady_clock::now();
+            if (now - gfi_last >= std::chrono::seconds(1)) {
+                gfi_last = now;
+                static const char *const gfi_names[4] = {
+                    "off", "light", "medium", "strong"};
+                if (gfi_mode == 0)
+                    mocap_pipe->set_gfi(false);
+                else
+                    mocap_pipe->set_gfi(true, static_cast<uint8_t>(gfi_mode - 1));
+                std::cout << "[gfi-cycle] " << gfi_names[gfi_mode] << "\n";
+                gfi_mode = (gfi_mode + 1) % 4;
+            }
         }
 
         // Enter pressed on stdin: save the current on-screen luma frame. Done
