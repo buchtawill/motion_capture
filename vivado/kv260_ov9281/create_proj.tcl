@@ -42,6 +42,7 @@ proc checkRequiredFiles { origin_dir} {
  "[file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/run_extractor.sv"]"\
  "[file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/row_merger.sv"]"\
  "[file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/blob_table.sv"]"\
+ "[file normalize "$origin_dir/../ip_repo/gfi/hdl/gfi.sv"]"\
  "[file normalize "$origin_dir/../ip_repo/mocap/rdl/mocap_regs_defines.svh"]"\
  "[file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs_pkg.sv"]"\
  "[file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs.sv"]"\
@@ -174,6 +175,7 @@ set files [list \
  [file normalize "$origin_dir/../ip_repo/isp/isp_histogram.sv"]\
  [file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/run_extractor.sv"]\
  [file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/row_merger.sv"]\
+ [file normalize "$origin_dir/../ip_repo/gfi/hdl/gfi.sv"]\
  [file normalize "$origin_dir/../ip_repo/blob_detect_rle/hdl/blob_table.sv"]\
  [file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs_pkg.sv"]\
  [file normalize "$origin_dir/../ip_repo/mocap/rdl/rdl_out/rtl/mocap_regs.sv"]\
