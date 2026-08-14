@@ -43,6 +43,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -625,9 +626,18 @@ int main(int argc, char *argv[]) {
                 const uint64_t dc = captured - last_captured;
                 const uint64_t dd = displayed - last_displayed;
                 const uint64_t dropped = dc > dd ? dc - dd : 0;
-                std::cout << "displayed " << (dd / elapsed) << " fps, dropped "
-                          << dropped << " of " << dc << " captured in "
-                          << elapsed << "s";
+                // Fixed-width fields so successive lines stay column-aligned.
+                // "incoming" = camera capture rate (frames dequeued from V4L2);
+                // "displayed" = frames actually page-flipped to the screen.
+                const std::ios::fmtflags oldf(std::cout.flags());
+                const std::streamsize oldp = std::cout.precision();
+                std::cout << std::fixed << std::setprecision(1)
+                          << "incoming "  << std::setw(6) << (dc / elapsed) << " fps | "
+                          << "displayed " << std::setw(6) << (dd / elapsed) << " fps | "
+                          << "dropped "   << std::setw(4) << dropped
+                          << " of "       << std::setw(4) << dc
+                          << " | window " << std::setprecision(2) << std::setw(5)
+                          << elapsed << " s";
                 // Luma diagnostic on the on-screen buffer (we own it, so it is
                 // not being overwritten): subsampled min/mean/max. This tells
                 // "dark" (low values) from "inverted" (a normal-looking mean but
@@ -648,10 +658,13 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     dmabuf_sync_read(slot[fb_screen].dmabuf_fd, false);
-                    std::cout << "  luma[min/mean/max]=" << lo << "/"
-                              << (cnt ? sum / cnt : 0) << "/" << hi;
+                    std::cout << " | luma[min/mean/max]=" << std::setw(3) << lo << "/"
+                              << std::setw(3) << (cnt ? sum / cnt : 0) << "/"
+                              << std::setw(3) << hi;
                 }
                 std::cout << "\n";
+                std::cout.flags(oldf);
+                std::cout.precision(oldp);
                 last_captured = captured;
                 last_displayed = displayed;
                 last_report = now;
