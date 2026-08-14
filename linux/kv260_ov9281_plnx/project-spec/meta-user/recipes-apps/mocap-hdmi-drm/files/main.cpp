@@ -176,6 +176,10 @@ int main(int argc, char *argv[]) {
         .default_value(3u)
         .scan<'u', unsigned>()
         .help("red box outline thickness in pixels");
+    program.add_argument("--gfi")
+        .default_value(std::string("med"))
+        .help("GFI pre-filter strength: off | low | med | high "
+              "(default med; overridden by --gfi-cycle)");
     program.add_argument("--gfi-cycle")
         .default_value(false)
         .implicit_value(true)
@@ -213,6 +217,14 @@ int main(int argc, char *argv[]) {
     const bool test_mode = program.get<bool>("--test");
     const bool blobs_disabled = program.get<bool>("--no-blobs");
     const bool gfi_cycle = program.get<bool>("--gfi-cycle");
+    const std::string gfi_arg = program.get<std::string>("--gfi");
+    // -1 = off (bypass), 0/1/2 = light/medium/strong
+    int gfi_static = 1;
+    if      (gfi_arg == "off")  gfi_static = -1;
+    else if (gfi_arg == "low")  gfi_static = 0;
+    else if (gfi_arg == "med")  gfi_static = 1;
+    else if (gfi_arg == "high") gfi_static = 2;
+    else die("--gfi must be one of: off | low | med | high");
     const unsigned blob_threshold = program.get<unsigned>("--threshold");
     const unsigned box_thickness = program.get<unsigned>("--box-thickness");
 
@@ -366,9 +378,17 @@ int main(int argc, char *argv[]) {
     // BEFORE streaming starts so framing is clean from the first frame.
     mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
                     static_cast<uint8_t>(blob_threshold));
+    // Apply the --gfi static setting on top of arm()'s default (unless the
+    // --gfi-cycle demo owns GFI). Reused after each watchdog re-arm below.
+    auto apply_gfi_static = [&]() {
+        if (gfi_cycle || !mocap_pipe) return;
+        if (gfi_static < 0) mocap_pipe->set_gfi(false);
+        else                mocap_pipe->set_gfi(true, static_cast<uint8_t>(gfi_static));
+    };
+    apply_gfi_static();
     std::cout << "mocap pipeline armed " << gw << "x" << gh << ", threshold "
               << blob_threshold << ", MAX_BLOBS " << mocap_pipe->max_blobs()
-              << "\n";
+              << ", GFI " << (gfi_cycle ? "cycle" : gfi_arg) << "\n";
     if (!blobs_disabled) {
         blobdet.reset(new BlobDetector(*mocap_pipe));
         // Full-screen ARGB overlay: the DPSUB graphics plane is can_position=
@@ -515,6 +535,7 @@ int main(int argc, char *argv[]) {
             mocap_pipe->reset();
             mocap_pipe->arm(static_cast<uint16_t>(gw), static_cast<uint16_t>(gh),
                             static_cast<uint8_t>(blob_threshold));
+            apply_gfi_static();   // restore the --gfi setting after re-arm
             if (mocap_fd >= 0)
                 mocap_pipe->arm_irq();
             box_clear(box); // clear boxes drawn from the wedged frame
@@ -662,7 +683,8 @@ int main(int argc, char *argv[]) {
                           << "dropped "   << std::setw(4) << dropped
                           << " of "       << std::setw(4) << dc
                           << " | window " << std::setprecision(2) << std::setw(5)
-                          << elapsed << " s";
+                          << elapsed << " s"
+                          << " | blobs " << std::setw(3) << blob_list.size();
                 // Luma diagnostic on the on-screen buffer (we own it, so it is
                 // not being overwritten): subsampled min/mean/max. This tells
                 // "dark" (low values) from "inverted" (a normal-looking mean but
