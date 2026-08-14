@@ -84,6 +84,16 @@ addrmap mocap_regs {
         field { hw = r; sw = rw; } THRESHOLD[15:8] = 8'd128;
         // Bits [15:8]: Pixel threshold for blob foreground (pixel >= THRESHOLD).
         //        Preserved across a CMD.RESET pulse.
+
+        field { hw = r; sw = rw; } GFI_ENABLE[16:16] = 0;
+        // Bit 16: Enable the GFI Gaussian 3x3 pre-filter on the blob snoop path.
+        //        0 = bypass (the blob detector sees raw luma). The video
+        //        passthrough and histogram/AE paths are unaffected either way.
+
+        field { hw = r; sw = rw; } GFI_STRENGTH[18:17] = 2'd0;
+        // Bits [18:17]: GFI preset when enabled: 0=light, 1=medium, 2=strong.
+        // Defaults to 0 so CTRL's reset value is unchanged (GFI is off by
+        // default anyway; SW sets strength when it enables GFI).
     };
 
     // =========================================================

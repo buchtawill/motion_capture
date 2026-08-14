@@ -35,6 +35,7 @@ COMMON_DIR := $(abspath ../../common)
 ISP_DIR    := $(abspath ../../isp)
 BLOB_DIR   := $(abspath ../../blob_detect_rle)
 BLOB_MODEL := $(BLOB_DIR)/model
+GFI_DIR    := $(abspath ../../gfi)
 
 VIVADO_SETTINGS := /tools/Xilinx/Vivado/2024.1/settings64.sh
 MOCAP_ENV       := /home/will/Desktop/motion_capture/mocap_env/bin/activate
@@ -48,6 +49,7 @@ MOCAP_RTL := \
 	$(BLOB_DIR)/hdl/run_extractor.sv \
 	$(BLOB_DIR)/hdl/row_merger.sv \
 	$(BLOB_DIR)/hdl/blob_table.sv \
+	$(GFI_DIR)/hdl/gfi.sv \
 	$(HDL_DIR)/mocap_top.sv \
 	$(HDL_DIR)/mocap_wrapper.v
 

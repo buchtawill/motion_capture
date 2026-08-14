@@ -232,13 +232,46 @@ module mocap_top #(
     wire [AXIS_TUSER_WIDTH-1:0] in_pix_tuser = in_fifo_m_pl.tuser;
 
     // =========================================================================
-    // Blob core: run_extractor -> row_merger -> blob_table (reused unmodified,
-    // control signals driven by the FC FSM below instead of blob's own regs)
+    // GFI: optional 3x3 Gaussian pre-filter on the blob SNOOP path only. Only
+    // run_extractor sees the (optionally) filtered pixels; the video passthrough
+    // and the two histogram instances keep snooping RAW luma. enable/strength
+    // come from CTRL wires; bypass (enable=0) has identical latency so framing
+    // is unchanged. GFI is fed the captured in_fifo beats; the force-drain
+    // outside a capture is preserved by gating the FIFO pop (below), not GFI.
     // =========================================================================
+    logic        gfi_s_ready;
+    logic        gfi_m_valid, gfi_m_sof, gfi_m_eol;
+    logic [31:0] gfi_m_data;
+
+    // run_extractor control/handshake wires (declared here so GFI, which drives
+    // re_s_ready as its m_ready, sees them before use).
     logic        re_enable, re_clear, re_s_ready, re_frame_done;
     logic [15:0] re_run_xs, re_run_xe, re_run_row;
     logic        re_run_last, re_run_valid, re_run_ready;
 
+    gfi #(.MAX_WIDTH(2048)) u_gfi (
+        .clk      (aclk),
+        .rst_n    (aresetn),
+        .enable   (hwif_out.CTRL.GFI_ENABLE.value),
+        .strength (hwif_out.CTRL.GFI_STRENGTH.value),
+        .hres     (hres),
+        .vres     (vres),
+        .s_valid  (in_fifo_m_valid & capturing_q),
+        .s_ready  (gfi_s_ready),
+        .s_data   (in_pix_data),
+        .s_sof    (in_pix_tuser[0]),
+        .s_eol    (in_pix_tlast),
+        .m_valid  (gfi_m_valid),
+        .m_ready  (re_s_ready),
+        .m_data   (gfi_m_data),
+        .m_sof    (gfi_m_sof),
+        .m_eol    (gfi_m_eol)
+    );
+
+    // =========================================================================
+    // Blob core: run_extractor -> row_merger -> blob_table (reused unmodified,
+    // control signals driven by the FC FSM below instead of blob's own regs)
+    // =========================================================================
     run_extractor u_run_ext (
         .clk       (aclk),
         .rst_n     (aresetn),
@@ -247,8 +280,8 @@ module mocap_top #(
         .threshold (threshold),
         .hres      (hres),
         .vres      (vres),
-        .s_data    (in_pix_data),
-        .s_valid   (in_fifo_m_valid),
+        .s_data    (gfi_m_data),
+        .s_valid   (gfi_m_valid),
         .s_ready   (re_s_ready),
         .run_xs    (re_run_xs),
         .run_xe    (re_run_xe),
@@ -264,7 +297,7 @@ module mocap_top #(
     // re_s_ready while it emits a run) can never backpressure s_axis or the video
     // FIFO, only its own snoop FIFO. OUTSIDE a capture we force-drain (discard)
     // so the FIFO returns to empty before the next capture's SOF.
-    assign in_fifo_m_ready = capturing_q ? re_s_ready : 1'b1;
+    assign in_fifo_m_ready = capturing_q ? gfi_s_ready : 1'b1;
 
     logic        rm_enable, rm_clear;
     logic [15:0] rm_out_xs, rm_out_xe, rm_out_row;
@@ -356,14 +389,16 @@ module mocap_top #(
                 .ram_addr_i     (hwif_out.HIST_ADDR.HIST_ADDR.value),
                 .ram_data_o     (hist_ram_data[gi]),
                 .ram_data_o_vld (hist_ram_data_vld[gi]),
-                // Snoop the input-FIFO POP point (the beat run_extractor consumes),
-                // NOT s_axis, so histogram framing matches the blob engine exactly.
-                // Enqueue = (in_fifo_m_valid & in_fifo_m_ready) & hist_en_i. Pops
-                // are gated off during FINALIZE (re_enable low), so no next-frame
-                // beats bleed into this frame's bank in continuous mode.
-                .pix_data_i     (in_pix_data),
-                .pix_data_vld_i (in_fifo_m_valid),
-                .pix_data_rdy_i (in_fifo_m_ready)
+                // Snoop the raw INPUT capture beat (blob_capture_beat), NOT the
+                // u_in_fifo pop. With GFI in the snoop path the FIFO is drained
+                // late/bursty and not in lockstep with the input frame, so the pop
+                // point would over-count (capturing_q extension) and overflow the
+                // histogram FIFO (GFI-paced bursts). The input capture beat is at
+                // the steady camera rate and bounded to exactly one frame by
+                // input_capture. Enqueue = blob_capture_beat & hist_en_i.
+                .pix_data_i     (s_axis_tdata),
+                .pix_data_vld_i (blob_capture_beat),
+                .pix_data_rdy_i (1'b1)
             );
         end
     endgenerate
@@ -502,7 +537,30 @@ module mocap_top #(
     // edge below), so without this exclusion the next frame's SOF beat would
     // sneak into u_in_fifo as a stray leftover that misaligns the following
     // real capture.
-    assign blob_capture_beat = s_axis_accept & (capturing_q | blob_capture_start) & !fc_force_resync;
+    // input_capture: the TIGHT window = exactly one INPUT frame (SOF .. vres
+    // input rows). It bounds the ENQUEUE into u_in_fifo and the histogram/
+    // pixel-sum snoop. capturing_q (below) is the EXTENDED window that keeps GFI
+    // draining the buffered frame until re_frame_done; GFI's ~1-row latency makes
+    // capturing_q outlive the input frame, so using it for the enqueue/histogram
+    // would capture into the next frame. input_capture cannot, so the histogram
+    // counts exactly one frame's input beats at the steady input rate (no
+    // GFI-paced burst, no next-frame over-count).
+    logic        input_capture;
+    logic [15:0] in_row_cnt;
+    wire         in_eol_cap = blob_capture_beat & s_axis_tlast;
+    assign blob_capture_beat = s_axis_accept & (input_capture | blob_capture_start) & !fc_force_resync;
+
+    always_ff @(posedge aclk or negedge aresetn) begin
+        if (!aresetn)                begin input_capture <= 1'b0; in_row_cnt <= 16'd0; end
+        else if (rst_all)            begin input_capture <= 1'b0; in_row_cnt <= 16'd0; end
+        else if (re_clear)           begin input_capture <= 1'b0; in_row_cnt <= 16'd0; end
+        else if (fc_force_resync)    begin input_capture <= 1'b0; in_row_cnt <= 16'd0; end
+        else if (blob_capture_start) begin input_capture <= 1'b1; in_row_cnt <= 16'd0; end
+        else if (in_eol_cap) begin
+            in_row_cnt <= in_row_cnt + 16'd1;
+            if (in_row_cnt + 16'd1 >= vres) input_capture <= 1'b0; // all input rows captured
+        end
+    end
 
     always_ff @(posedge aclk or negedge aresetn) begin
         if (!aresetn)                capturing_q <= 1'b0;
@@ -567,18 +625,20 @@ module mocap_top #(
     // Accumulate over exactly the beats the histogram counts: the input-FIFO pop
     // while the active bank's hist_en is high. Guarantees PIXEL_SUM == sum(bin*i).
     logic [31:0] fc_pixel_sum_q;
-    wire         beat_consumed = in_fifo_m_valid && in_fifo_m_ready;
-    wire         capture_beat  = hist_active_period && beat_consumed;
+    // Sum exactly the beats/pixels the histogram counts: the raw input capture
+    // beat (blob_capture_beat, bounded to one input frame by input_capture) so
+    // PIXEL_SUM == sum(bin[i]*i).
+    wire         capture_beat  = hist_active_period && blob_capture_beat;
 
     always_ff @(posedge aclk or negedge aresetn) begin
         if (!aresetn)             fc_pixel_sum_q <= 32'h0;
         else if (rst_all)         fc_pixel_sum_q <= 32'h0;
         else if (re_clear)        fc_pixel_sum_q <= 32'h0;
         else if (capture_beat)    fc_pixel_sum_q <= fc_pixel_sum_q
-                                                   + {24'h0, in_pix_data[ 7: 0]}
-                                                   + {24'h0, in_pix_data[15: 8]}
-                                                   + {24'h0, in_pix_data[23:16]}
-                                                   + {24'h0, in_pix_data[31:24]};
+                                                   + {24'h0, s_axis_tdata[ 7: 0]}
+                                                   + {24'h0, s_axis_tdata[15: 8]}
+                                                   + {24'h0, s_axis_tdata[23:16]}
+                                                   + {24'h0, s_axis_tdata[31:24]};
     end
 
     // =========================================================================
