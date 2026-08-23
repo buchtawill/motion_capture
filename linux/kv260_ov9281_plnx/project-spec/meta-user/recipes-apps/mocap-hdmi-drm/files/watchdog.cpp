@@ -75,7 +75,8 @@ long read_irq_count(const std::string &label) {
 static constexpr int kWdPollMs = 150;
 static constexpr int kWdStallMs = 750;
 
-void watchdog_thread(MocapPipeline *mp, std::string irq_label) {
+void watchdog_thread(MocapPipeline *mp, std::string irq_label,
+                     bool trigger_mode) {
     using clock = std::chrono::steady_clock;
     auto ms_since = [](clock::time_point t) {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -133,9 +134,13 @@ void watchdog_thread(MocapPipeline *mp, std::string irq_label) {
         if (ms_since(t0) < 2000)
             continue;
 
+        // In external-trigger mode only a dead PL clock is a real fault; the
+        // frame/capture/IRQ signals legitimately pause between FSIN pulses.
         State next = HEALTHY;
         if (clock_dead)
             next = CLOCK_DEAD;
+        else if (trigger_mode)
+            next = HEALTHY;       // suppress frame/capture/IRQ stall classes
         else if (cam_alive && frame_stalled)
             next = PIPELINE_HANG; // sensor delivering + clock alive, no new publish
         else if (!cam_alive)

@@ -130,6 +130,11 @@ int main(int argc, char *argv[]) {
     program.add_argument("--vblank")
         .default_value(std::string("min"))
         .help("sensor vertical blanking: 'min' (max fps), 'keep', or integer");
+    program.add_argument("--trigger")
+        .default_value(false)
+        .implicit_value(true)
+        .help("external hardware trigger: sensor emits one frame per FSIN pulse "
+              "(skips --fps/--vblank; 'incoming fps' then = trigger rate)");
     program.add_argument("--skip-setup")
         .default_value(false)
         .implicit_value(true)
@@ -207,6 +212,7 @@ int main(int argc, char *argv[]) {
     const std::string mbus_arg = program.get<std::string>("--mbus-code");
     const std::string fps_arg = program.get<std::string>("--fps");
     const std::string vblank_arg = program.get<std::string>("--vblank");
+    const bool trigger = program.get<bool>("--trigger");
     const bool skip_setup = program.get<bool>("--skip-setup");
     const bool enable_ae = program.get<bool>("--ae");
     const double ae_target = program.get<double>("--ae-target");
@@ -265,7 +271,11 @@ int main(int argc, char *argv[]) {
         sensor_path = configure_subdevs(media_dev, sensor_name, csi_name,
                                         mbus_code, width, height);
 
-        if (fps_arg != "max") {
+        if (trigger) {
+            // External trigger: the pulse interval sets the frame rate, so the
+            // free-run fps/vblank programming is skipped. Enable before STREAMON.
+            apply_trigger_mode(sensor_path, true);
+        } else if (fps_arg != "max") {
             double target;
             try {
                 target = std::stod(fps_arg);
@@ -429,7 +439,11 @@ int main(int argc, char *argv[]) {
                   << (seed >= 0 ? "matched /proc/interrupts"
                                 : "NOT found -- IRQ-lost detection disabled")
                   << ")\n";
-        watchdog = std::thread(watchdog_thread, mocap_pipe.get(), irq_label);
+        // In external-trigger mode, long inter-pulse gaps are legitimate, so the
+        // watchdog keeps only CLOCK_DEAD and skips the frame/capture/IRQ stall
+        // classes (which would otherwise soft-reset the block between pulses).
+        watchdog = std::thread(watchdog_thread, mocap_pipe.get(), irq_label,
+                               trigger);
     }
 
     // --- stdin frame-grab thread --------------------------------------------

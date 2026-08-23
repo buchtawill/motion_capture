@@ -47,4 +47,9 @@ std::string resolve_irq_label(const std::string &uio_dev);
 // contains `label`. Returns -1 if the label is empty or no line matches.
 long read_irq_count(const std::string &label);
 
-void watchdog_thread(mocap::MocapPipeline *mp, std::string irq_label);
+// trigger_mode: when true (external-trigger capture), only CLOCK_DEAD is
+// classified -- FRAME_ID/capture/IRQ "stalls" are expected during the legitimate
+// gaps between FSIN pulses, so those classes (and their soft-reset request) are
+// suppressed.
+void watchdog_thread(mocap::MocapPipeline *mp, std::string irq_label,
+                     bool trigger_mode = false);
