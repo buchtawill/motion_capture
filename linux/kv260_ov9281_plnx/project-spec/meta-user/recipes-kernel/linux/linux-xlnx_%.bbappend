@@ -13,3 +13,6 @@ SRC_URI += "file://0001-xilinx-csi2rxss-add-Y8_1X8-mono-RAW8-mbus-code.patch"
 # Runtime external-trigger mode for the OV9281 (snapshot-per-FSIN-pulse).
 SRC_URI += "file://0002-ov9282-add-external-trigger-mode.patch"
 
+# Enable the OV9281 STROBE exposure-indicator output by default.
+SRC_URI += "file://0003-ov9282-enable-strobe-output.patch"
+

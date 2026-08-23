@@ -1,0 +1,43 @@
+From: Will Buchta <buchtawill@gmail.com>
+Date: Sat, 23 Aug 2026 00:00:00 +0000
+Subject: [PATCH] media: i2c: ov9282: enable STROBE exposure-indicator output
+
+The OV9281 STROBE pad (B6) is a "frame exposure output indicator" -- it pulses
+in sync with the pixel-array integration window, ideal for gating a strobed IR
+illuminator on the mocap rig. It is disabled at reset and by the vendor init:
+common_regs writes 0x3006=0x04 (io_pad_out_en bit2 = ILPWM out; STROBE bit3 = 0
+= input), and never sets 0x392F (reset 0x40) so r_strobe_frm_pwen (bit7) = 0,
+leaving the strobe engine off.
+
+Enable it by default in common_regs (applied every start_streaming, so both
+free-run and external-trigger modes get it):
+  - 0x3006: 0x04 -> 0x0C  (set bit3: STROBE pad = output; FSIN bit1 stays input,
+    so external-trigger input is unaffected)
+  - 0x392F: add 0xC0      (bit7 r_strobe_frm_pwen = 1, keep bit6 r_strobe_frm_pwst)
+
+0x3027 bit3 (STROBE output select) is left at its reset 0 = normal data path, so
+the strobe engine (not a static register value) drives the pin. Pulse polarity
+(0x392F bit5 r_strobe_pol) and width/shift (0x3921-0x3928) keep their defaults;
+tune on a scope for the specific illuminator.
+
+Signed-off-by: Will Buchta <buchtawill@gmail.com>
+---
+--- a/drivers/media/i2c/ov9282.c
++++ b/drivers/media/i2c/ov9282.c
+@@ -208,7 +208,7 @@
+ 	{0x3001, 0x00},
+ 	{0x3004, 0x00},
+ 	{0x3005, 0x00},
+-	{0x3006, 0x04},
++	{0x3006, 0x0c},	/* io_pad_out_en: bit3 STROBE=output (was bit2 ILPWM only) */
+ 	{0x3011, 0x0a},
+ 	{0x3013, 0x18},
+ 	{0x301c, 0xf0},
+@@ -247,6 +247,7 @@
+ 	{0x38c6, 0x04},
+ 	{0x38c7, 0x80},
+ 	{0x3920, 0xff},
++	{0x392f, 0xc0},	/* PWM_CTRL_2F: bit7 r_strobe_frm_pwen=1 (enable strobe engine) */
+ 	{0x4010, 0x40},
+ 	{0x4043, 0x40},
+ 	{0x4307, 0x30},
