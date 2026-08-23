@@ -1,0 +1,158 @@
+From: Will Buchta <buchtawill@gmail.com>
+Date: Sat, 23 Aug 2026 00:00:00 +0000
+Subject: [PATCH] media: i2c: ov9282: add runtime external-trigger mode
+
+The mocap rig needs several OV9281 cameras to expose the same instant, which
+requires hardware external triggering (one FSIN pulse -> one frame). The
+mainline ov9282 driver only does free-run master mode.
+
+Add snapshot-per-pulse trigger support, ported from raspberrypi/linux PR #6954,
+exposed as a runtime-selectable private V4L2 control ("trigger_mode", boolean,
+default 0) rather than a device-tree property -- enabling trigger on this sensor
+is pure I2C register writes, so no DT change is needed, and a control lets one
+userspace binary switch between free-run and triggered without reloading the
+overlay.
+
+When trigger_mode=1, start_streaming() programs the trigger block
+(0x4f00/0x3030/0x303f/...) and leaves the sensor in standby; each rising FSIN
+edge then clocks out one frame. Exposure remains software-set (register) and is
+unaffected by the pulse. Default (0) leaves the free-run path untouched.
+
+Signed-off-by: Will Buchta <buchtawill@gmail.com>
+---
+--- a/drivers/media/i2c/ov9282.c
++++ b/drivers/media/i2c/ov9282.c
+@@ -65,6 +65,22 @@
+ #define OV9282_REG_MIPI_CTRL00	0x4800
+ #define OV9282_GATED_CLOCK	BIT(5)
+ 
++/*
++ * External hardware trigger (snapshot-per-pulse) registers. Ported from
++ * raspberrypi/linux PR #6954: each FSIN rising edge clocks out one frame while
++ * the sensor otherwise sits in standby. Exposure stays software-set (register),
++ * unaffected by the pulse.
++ */
++#define OV9282_REG_POWER_CTRL		0x4f00
++#define OV9282_REG_LOW_POWER_CTRL	0x3030
++#define OV9282_REG_NUM_FRAME_ON_TRIG	0x303f
++#define OV9282_REG_SLEEP_CTRL0		0x302c
++#define OV9282_REG_SLEEP_CTRL3		0x302f
++#define OV9282_REG_TIMING_23		0x3823
++#define OV9282_LOW_POWER_TRIGGER	0x04
++/* Private, runtime-selectable control: 0 = free-run master, 1 = ext trigger */
++#define OV9282_CID_TRIGGER_MODE		(V4L2_CID_USER_BASE + 0x1000)
++
+ /* Input clock rate */
+ #define OV9282_INCLK_RATE	24000000
+ 
+@@ -183,7 +199,9 @@
+ 		struct v4l2_ctrl *again_ctrl;
+ 	};
+ 	struct v4l2_ctrl *pixel_rate;
++	struct v4l2_ctrl *trigger_mode_ctrl;
+ 	u32 vblank;
++	bool trigger_mode;
+ 	bool noncontinuous_clock;
+ 	const struct ov9282_mode *cur_mode;
+ 	u32 code;
+@@ -662,6 +680,10 @@
+ 	int ret;
+ 
+ 	switch (ctrl->id) {
++	case OV9282_CID_TRIGGER_MODE:
++		/* Config-only: latched here, applied in start_streaming(). */
++		ov9282->trigger_mode = ctrl->val;
++		return 0;
+ 	case V4L2_CID_VBLANK:
+ 		ov9282->vblank = ov9282->vblank_ctrl->val;
+ 
+@@ -950,6 +972,29 @@
+ }
+ 
+ /**
++ * ov9282_apply_trigger_config() - Program the external-trigger block
++ * @ov9282: pointer to ov9282 device
++ *
++ * Enable snapshot-on-FSIN with one frame per rising edge. Applied after the
++ * common/mode registers (which set free-run 0x3030=0x10), so it overrides them.
++ *
++ * Return: 0 if successful, error code otherwise.
++ */
++static int ov9282_apply_trigger_config(struct ov9282 *ov9282)
++{
++	static const struct ov9282_reg trig_regs[] = {
++		{OV9282_REG_POWER_CTRL,        0x01}, /* enable trigger block */
++		{OV9282_REG_LOW_POWER_CTRL,    OV9282_LOW_POWER_TRIGGER},
++		{OV9282_REG_NUM_FRAME_ON_TRIG, 0x01}, /* 1 frame per pulse */
++		{OV9282_REG_SLEEP_CTRL0,       0x00},
++		{OV9282_REG_SLEEP_CTRL3,       0x7f},
++		{OV9282_REG_TIMING_23,         0x00},
++	};
++
++	return ov9282_write_regs(ov9282, trig_regs, ARRAY_SIZE(trig_regs));
++}
++
++/**
+  * ov9282_start_streaming() - Start sensor stream
+  * @ov9282: pointer to ov9282 device
+  *
+@@ -1000,6 +1045,28 @@
+ 		return ret;
+ 	}
+ 
++	if (ov9282->trigger_mode) {
++		/*
++		 * External trigger: program the trigger block and leave the
++		 * sensor in standby. Each FSIN pulse then clocks out one frame;
++		 * no free-run streaming write.
++		 */
++		ret = ov9282_apply_trigger_config(ov9282);
++		if (ret) {
++			dev_err(ov9282->dev, "fail to apply trigger config");
++			return ret;
++		}
++		ret = ov9282_write_reg(ov9282, OV9282_REG_MODE_SELECT,
++				       1, OV9282_MODE_STANDBY);
++		if (ret) {
++			dev_err(ov9282->dev, "fail to enter standby for trigger");
++			return ret;
++		}
++		dev_info(ov9282->dev,
++			 "external trigger mode: awaiting FSIN pulses\n");
++		return 0;
++	}
++
+ 	/* Start streaming */
+ 	ret = ov9282_write_reg(ov9282, OV9282_REG_MODE_SELECT,
+ 			       1, OV9282_MODE_STREAMING);
+@@ -1300,7 +1367,18 @@
+ 	u32 lpfr;
+ 	int ret;
+ 
+-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 10);
++	static const struct v4l2_ctrl_config trigger_mode_cfg = {
++		.ops = &ov9282_ctrl_ops,
++		.id = OV9282_CID_TRIGGER_MODE,
++		.name = "trigger_mode",
++		.type = V4L2_CTRL_TYPE_BOOLEAN,
++		.min = 0,
++		.max = 1,
++		.step = 1,
++		.def = 0,
++	};
++
++	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 11);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1365,6 +1443,10 @@
+ 						OV9282_TIMING_HTS_MAX - mode->width,
+ 						1, hblank_min);
+ 
++	/* Runtime external-trigger select (default 0 = free-run, unchanged). */
++	ov9282->trigger_mode_ctrl =
++		v4l2_ctrl_new_custom(ctrl_hdlr, &trigger_mode_cfg, NULL);
++
+ 	ret = v4l2_fwnode_device_parse(ov9282->dev, &props);
+ 	if (!ret) {
+ 		/* Failure sets ctrl_hdlr->error, which we check afterwards anyway */
