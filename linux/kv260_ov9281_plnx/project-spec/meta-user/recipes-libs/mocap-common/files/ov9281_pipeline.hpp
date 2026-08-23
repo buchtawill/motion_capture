@@ -296,6 +296,54 @@ inline void apply_vblank(const std::string &sensor_path,
               << q.default_value << ")\n";
 }
 
+// Enable/disable the sensor's external hardware-trigger mode via the driver's
+// private "trigger_mode" V4L2 control (see the ov9282 external-trigger patch).
+// In trigger mode the sensor sits in standby and emits one frame per FSIN pulse;
+// exposure stays software-set. Must be called before STREAMON.
+//
+// The control is matched by NAME rather than a hardcoded id, so the app stays
+// decoupled from the driver's private control number. Aborts with a clear
+// message if the running kernel lacks the control.
+inline void apply_trigger_mode(const std::string &sensor_path, bool on) {
+    int fd = open(sensor_path.c_str(), O_RDWR);
+    if (fd == -1)
+        fail("open " + sensor_path + " (trigger)");
+
+    v4l2_queryctrl q{};
+    uint32_t id = 0;
+    bool found = false;
+    for (;;) {
+        q = v4l2_queryctrl{};
+        q.id = id | V4L2_CTRL_FLAG_NEXT_CTRL;
+        if (xioctl(fd, VIDIOC_QUERYCTRL, &q) == -1)
+            break; // enumeration exhausted
+        if (std::string(reinterpret_cast<const char *>(q.name)) ==
+            "trigger_mode") {
+            found = true;
+            break;
+        }
+        id = q.id;
+    }
+    if (!found) {
+        close(fd);
+        fail("sensor has no 'trigger_mode' control -- rebuild the kernel with "
+             "the ov9282 external-trigger patch");
+    }
+
+    v4l2_control c{};
+    c.id = q.id;
+    c.value = on ? 1 : 0;
+    if (xioctl(fd, VIDIOC_S_CTRL, &c) == -1) {
+        close(fd);
+        fail("VIDIOC_S_CTRL trigger_mode");
+    }
+    close(fd);
+    std::cout << "External trigger mode "
+              << (on ? "ENABLED (sensor in standby, 1 frame per FSIN pulse)"
+                     : "disabled (free-run)")
+              << "\n";
+}
+
 // --- capture modes / frame-rate targeting ---------------------------------
 
 // Resolutions the mainline ov9282.c actually supports (its supported_modes[]).
